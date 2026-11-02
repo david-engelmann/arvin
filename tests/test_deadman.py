@@ -603,6 +603,103 @@ def test_a_stored_spend_total_with_thousands_of_digits_is_corruption(tmp_path):
     assert path.read_bytes() == damaged
 
 
+def test_a_missed_proof_limit_at_the_bound_registers(tmp_path):
+    switch = make_switch(tmp_path)
+    switch.register("run-a", T0, missed_proof_limit=core.MISSED_PROOF_LIMIT_MAX)
+    run = read_run(tmp_path)
+    assert run["missed_proof_limit"] == core.MISSED_PROOF_LIMIT_MAX == 1000000
+    assert switch.stage("run-a", T0).stage == "none"
+
+
+def test_a_missed_proof_limit_past_the_bound_is_refused(tmp_path):
+    switch = make_switch(tmp_path)
+    with pytest.raises(InvalidRequestError):
+        switch.register(
+            "run-a", T0, missed_proof_limit=core.MISSED_PROOF_LIMIT_MAX + 1
+        )
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-a", T0, missed_proof_limit=10**5000)
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_ceilings_at_the_bound_register(tmp_path):
+    switch = make_switch(tmp_path)
+    switch.register(
+        "run-a", T0, soft_ceiling=core.SPEND_MAX, hard_ceiling=core.SPEND_MAX
+    )
+    run = read_run(tmp_path)
+    assert run["soft_ceiling"] == core.SPEND_MAX
+    assert run["hard_ceiling"] == core.SPEND_MAX
+
+
+@pytest.mark.parametrize("field", ["soft_ceiling", "hard_ceiling"])
+def test_a_ceiling_past_the_bound_is_refused(tmp_path, field):
+    switch = make_switch(tmp_path)
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-a", T0, **{field: core.SPEND_MAX + 1})
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-a", T0, **{field: 10**5000})
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_a_refused_registration_changes_no_standing_state(tmp_path):
+    switch = make_switch(tmp_path)
+    switch.register("run-a", T0)
+    before = (tmp_path / "state.json").read_bytes()
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-b", T0, missed_proof_limit=10**5000)
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-b", T0, hard_ceiling=10**5000)
+    assert (tmp_path / "state.json").read_bytes() == before
+
+
+def test_the_cli_refuses_a_missed_limit_past_the_bound_without_a_traceback(
+    tmp_path,
+):
+    state = str(tmp_path / "state.json")
+    result = run_cli(
+        "--state", state, "register", "run-a",
+        "--missed-limit", "1000001", expect=2,
+    )
+    assert result.stderr.startswith("error:")
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "Traceback" not in result.stderr
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_a_stored_missed_proof_limit_past_the_bound_is_corruption(tmp_path):
+    document = json.loads(_valid_document(tmp_path))
+    document["runs"][0]["missed_proof_limit"] = core.MISSED_PROOF_LIMIT_MAX + 1
+    damaged = json.dumps(document).encode("utf-8")
+    path = tmp_path / "state.json"
+    path.write_bytes(damaged)
+    switch = Switch(path)
+    with pytest.raises(CorruptStateError):
+        switch.log("run-a")
+    assert path.read_bytes() == damaged
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("hard_ceiling", core.SPEND_MAX + 1),
+        ("soft_ceiling", core.SPEND_MAX + 1),
+    ],
+)
+def test_a_stored_ceiling_past_the_bound_is_corruption(tmp_path, field, value):
+    document = json.loads(_valid_document(tmp_path))
+    document["runs"][0][field] = value
+    if field == "soft_ceiling":
+        document["runs"][0]["hard_ceiling"] = core.SPEND_MAX + 2
+    damaged = json.dumps(document).encode("utf-8")
+    path = tmp_path / "state.json"
+    path.write_bytes(damaged)
+    switch = Switch(path)
+    with pytest.raises(CorruptStateError):
+        switch.log("run-a")
+    assert path.read_bytes() == damaged
+
+
 def _valid_document(tmp_path):
     switch = make_switch(tmp_path)
     switch.register("run-a", T0, soft_ceiling=10, hard_ceiling=100)
