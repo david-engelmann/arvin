@@ -56,6 +56,6 @@ Verify claims from the thing itself. A result is read from the file on disk, the
 
 The contract for this repo lives in CONTRACT.md and it defines the obligations this repo must meet. Read CONTRACT.md and the README before changing anything in deadman.
 
-Prod is the rescue ladder and deadman is the last rung. Deadman is the staged kill switch for agent runs, and its subject is the staged escalation vocabulary, the stage names warn and throttle and cut tools and cut budget and kill. This setup slice establishes the repo and its discipline only, and it claims no enforcement behaviour and no feature behaviour of any kind.
+Prod is the rescue ladder and deadman is the last rung. In plain terms, deadman is the final mechanism that stops a run when every other way of recovering it has already failed. Deadman is the staged kill switch for agent runs, and its subject is the staged escalation vocabulary, the stage names warn and throttle and cut tools and cut budget and kill. Round 1 slice 1 builds the switch that decides and records, over one state file in the deadman-state/1 format, with deterministic stage evaluation under an exclusive flock, proof freshness counted in whole missed intervals, the two evaluation fall hysteresis, the latched kill, and the decision log recorded in the same document as the state. This slice signals no process, and hosts poll the stage and enforce it against their own processes.
 
-The full contract is the first build act of this repo and it arrives with the first feature slice, which is a later slice than this setup slice.
+The full contract landed with Round 1 slice 1 as the amendment in CONTRACT.md, where obligations DM-1 to DM-12 state the stage semantics and the limits this slice keeps.

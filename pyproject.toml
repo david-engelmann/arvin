@@ -1,5 +1,17 @@
-# Packaging metadata arrives with the first package in this repo.
-# Until then this file carries the pytest configuration only.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deadman"
+version = "0.1.0"
+description = "A staged kill switch for agent runs, with every stage named and recorded"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.setuptools]
+packages = ["deadman"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
