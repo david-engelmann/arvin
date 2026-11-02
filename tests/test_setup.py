@@ -29,6 +29,14 @@ def test_agents_has_marker_and_deadman_annex_below_it():
     assert "staged kill switch" in annex
 
 
+def test_agents_annex_names_the_five_stages_in_order():
+    annex = read("AGENTS.md").split(MARKER, 1)[1]
+    assert (
+        "the stage names warn and throttle and cut tools and cut budget and kill"
+        in annex
+    )
+
+
 def test_agents_canonical_part_carries_program_headings():
     canonical = read("AGENTS.md").split(MARKER, 1)[0]
     assert canonical.startswith("# AGENTS.md\n")
