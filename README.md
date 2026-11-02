@@ -14,7 +14,7 @@ The contract lives in CONTRACT.md. The full contract landed with Round 1 slice 1
 
 Round 1 slice 1 builds the staged cutoff that decides and records. Hosts register runs, post progress proofs and spend reports, and poll the stage of a run through python -m deadman against one state file in the deadman-state/1 format. The evaluator walks a run down the stages on missed proofs and on spend ceilings, an operator pull goes straight to kill and latches it, and every decision stands in the decision log of the run. This slice signals no process, and hosts enforce the stage against their own processes.
 
-Closed perfection rounds are 0 of 100. A round counts only when a full cycle of work and audit and review and red team and approval has closed, and seeding and setup are not rounds.
+Closed perfection rounds are 1 of 100. A round counts only when a full cycle of work and audit and review and red team and approval has closed, and seeding and setup are not rounds.
 
 The local gate is python -m pytest -q plus python scripts/codepoint_scan.py, run on the exact final head before any push, with the continuous integration workflow running the same commands as a backstop.
 
