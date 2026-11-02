@@ -47,6 +47,7 @@ DEFAULT_MISSED_PROOF_LIMIT = 5
 
 PROOF_INTERVAL_MAX_SECONDS = 86_399_999_999_999
 SPEND_MAX = 10**18
+MISSED_PROOF_LIMIT_MAX = 1_000_000
 
 # The stage a missed proof count below the limit warrants under
 # DM-3, keyed by the count itself, with every higher count below
@@ -158,15 +159,18 @@ def _printable(value):
 def _validate_positive_int(value, field):
     if not _is_int(value) or value < 1:
         raise InvalidRequestError(
-            f"invalid {field} {value!r}, use a positive integer"
+            f"invalid {field} {_printable(value)}, use a positive integer"
         )
     return value
 
 
 def _validate_ceiling(value, field):
-    if value is not None and (not _is_int(value) or value < 0):
+    if value is not None and (
+        not _is_int(value) or value < 0 or value > SPEND_MAX
+    ):
         raise InvalidRequestError(
-            f"invalid {field} {value!r}, use a nonnegative integer or leave it unset"
+            f"invalid {field} {_printable(value)}, use a nonnegative "
+            f"integer of at most {SPEND_MAX} or leave it unset"
         )
     return value
 
@@ -269,11 +273,17 @@ def _validate_run(run):
     _parse_instant(run["registered_at"], _corrupt)
     if not _is_int(run["proof_interval_seconds"]) or run["proof_interval_seconds"] < 1:
         raise _corrupt(f"run {run['id']!r} holds an invalid proof interval")
-    if not _is_int(run["missed_proof_limit"]) or run["missed_proof_limit"] < 1:
+    if (
+        not _is_int(run["missed_proof_limit"])
+        or run["missed_proof_limit"] < 1
+        or run["missed_proof_limit"] > MISSED_PROOF_LIMIT_MAX
+    ):
         raise _corrupt(f"run {run['id']!r} holds an invalid missed proof limit")
     for field in ("soft_ceiling", "hard_ceiling"):
         value = run[field]
-        if value is not None and (not _is_int(value) or value < 0):
+        if value is not None and (
+            not _is_int(value) or value < 0 or value > SPEND_MAX
+        ):
             raise _corrupt(f"run {run['id']!r} holds an invalid {field}")
     if (
         run["soft_ceiling"] is not None
@@ -488,6 +498,11 @@ class Switch:
                 f"{PROOF_INTERVAL_MAX_SECONDS} seconds"
             )
         _validate_positive_int(missed_proof_limit, "missed proof limit")
+        if missed_proof_limit > MISSED_PROOF_LIMIT_MAX:
+            raise InvalidRequestError(
+                f"invalid missed proof limit {_printable(missed_proof_limit)}, "
+                f"use a positive integer of at most {MISSED_PROOF_LIMIT_MAX}"
+            )
         _validate_ceiling(soft_ceiling, "soft ceiling")
         _validate_ceiling(hard_ceiling, "hard ceiling")
         if (
