@@ -101,7 +101,7 @@ def test_register_records_the_registration_first(tmp_path):
     assert record["kind"] == "registered"
     assert record["stage"] == "none"
     assert record["reasons"] == []
-    assert record["at"] == core._format_instant(T0)
+    assert record["at"] == core.format_instant(T0)
 
 
 @pytest.mark.parametrize(
@@ -206,7 +206,7 @@ def test_a_late_proof_with_an_older_instant_moves_nothing(tmp_path):
     switch.prove("run-a", "working", at(100))
     switch.prove("run-a", "late arrival", at(50))
     run = read_run(tmp_path)
-    assert run["last_proof_at"] == core._format_instant(at(100))
+    assert run["last_proof_at"] == core.format_instant(at(100))
     assert switch.stage("run-a", at(160)).stage == "none"
 
 
@@ -502,6 +502,107 @@ def test_a_naive_instant_is_refused(tmp_path):
         switch.stage("run-a", naive)
 
 
+def test_a_proof_interval_at_the_representable_bound_registers(tmp_path):
+    switch = make_switch(tmp_path)
+    switch.register(
+        "run-a", T0, proof_interval_seconds=core.PROOF_INTERVAL_MAX_SECONDS
+    )
+    run = read_run(tmp_path)
+    assert run["proof_interval_seconds"] == 86399999999999
+    assert switch.stage("run-a", T0).stage == "none"
+
+
+def test_a_proof_interval_past_the_representable_bound_is_refused(tmp_path):
+    switch = make_switch(tmp_path)
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-a", T0, proof_interval_seconds=86400000000000)
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-a", T0, proof_interval_seconds=10**5000)
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_the_cli_refuses_an_interval_past_the_bound_without_a_traceback(tmp_path):
+    state = str(tmp_path / "state.json")
+    result = run_cli(
+        "--state", state, "register", "run-a",
+        "--proof-interval", "86400000000000", expect=2,
+    )
+    assert result.stderr.startswith("error:")
+    assert len(result.stderr.strip().splitlines()) == 1
+    assert "Traceback" not in result.stderr
+
+
+def test_an_instant_whose_utc_form_overflows_is_refused(tmp_path):
+    switch = make_switch(tmp_path)
+    extreme = datetime(
+        9999, 12, 31, 23, 0, tzinfo=timezone(timedelta(hours=-14))
+    )
+    with pytest.raises(InvalidRequestError):
+        switch.register("run-a", extreme)
+    assert not (tmp_path / "state.json").exists()
+
+
+def test_a_stored_interval_past_the_bound_fails_as_a_request_error(tmp_path):
+    document = json.loads(_valid_document(tmp_path))
+    document["runs"][0]["proof_interval_seconds"] = 100000000000000
+    damaged = json.dumps(document).encode("utf-8")
+    path = tmp_path / "state.json"
+    path.write_bytes(damaged)
+    switch = Switch(path)
+    with pytest.raises(InvalidRequestError):
+        switch.stage("run-a", at(10))
+    assert path.read_bytes() == damaged
+
+
+def test_a_spend_at_the_bound_is_accepted_and_past_it_refused(tmp_path):
+    switch = make_switch(tmp_path)
+    switch.register("run-a", T0)
+    total = switch.spend("run-a", core.SPEND_MAX, at(1))
+    assert total == core.SPEND_MAX == 1000000000000000000
+    before = (tmp_path / "state.json").read_bytes()
+    with pytest.raises(InvalidRequestError):
+        switch.spend("run-a", 1, at(2))
+    with pytest.raises(InvalidRequestError):
+        switch.spend("run-a", core.SPEND_MAX + 1, at(2))
+    assert (tmp_path / "state.json").read_bytes() == before
+
+
+def test_a_spend_with_thousands_of_digits_is_refused_cleanly(tmp_path):
+    switch = make_switch(tmp_path)
+    switch.register("run-a", T0)
+    before = (tmp_path / "state.json").read_bytes()
+    with pytest.raises(InvalidRequestError):
+        switch.spend("run-a", 10**5000, at(1))
+    assert (tmp_path / "state.json").read_bytes() == before
+
+
+def test_a_stored_spend_total_past_the_bound_is_corruption(tmp_path):
+    document = json.loads(_valid_document(tmp_path))
+    document["runs"][0]["spend_total"] = core.SPEND_MAX + 1
+    damaged = json.dumps(document).encode("utf-8")
+    path = tmp_path / "state.json"
+    path.write_bytes(damaged)
+    switch = Switch(path)
+    with pytest.raises(CorruptStateError):
+        switch.log("run-a")
+    assert path.read_bytes() == damaged
+
+
+def test_a_stored_spend_total_with_thousands_of_digits_is_corruption(tmp_path):
+    raw = _valid_document(tmp_path).decode("utf-8")
+    damaged = raw.replace(
+        '"spend_total": 10', '"spend_total": ' + "9" * 5000, 1
+    )
+    assert damaged != raw
+    damaged = damaged.encode("utf-8")
+    path = tmp_path / "state.json"
+    path.write_bytes(damaged)
+    switch = Switch(path)
+    with pytest.raises(CorruptStateError):
+        switch.log("run-a")
+    assert path.read_bytes() == damaged
+
+
 def _valid_document(tmp_path):
     switch = make_switch(tmp_path)
     switch.register("run-a", T0, soft_ceiling=10, hard_ceiling=100)
@@ -542,6 +643,8 @@ def test_damage_battery(tmp_path):
         lambda doc: doc["runs"][0].update({"killed": True}),
         lambda doc: doc["runs"][0].update({"soft_ceiling": 200}),
         lambda doc: doc["runs"][0]["log"][0].update({"kind": "vanished"}),
+        lambda doc: doc["runs"][0]["log"][0].update({"kind": []}),
+        lambda doc: doc["runs"][0]["log"][1].update({"kind": {"x": 1}}),
         lambda doc: doc["runs"][0]["log"][0].update({"seq": 7}),
         lambda doc: doc["runs"][0]["log"][1].update({"reasons": ["bad luck"]}),
         lambda doc: doc["runs"][0]["log"][1].update({"model_name": "a model"}),
@@ -600,7 +703,7 @@ def _spawn_workers(tmp_path, mode, count, instant):
                 str(ROOT),
                 mode,
                 str(tmp_path / "state.json"),
-                core._format_instant(instant),
+                core.format_instant(instant),
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
