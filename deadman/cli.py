@@ -12,7 +12,12 @@ import argparse
 import sys
 from datetime import datetime, timezone
 
-from .core import DeadmanError, Switch
+from .core import (
+    DEFAULT_MISSED_PROOF_LIMIT,
+    DEFAULT_PROOF_INTERVAL_SECONDS,
+    DeadmanError,
+    Switch,
+)
 
 
 def _now():
@@ -39,14 +44,20 @@ def build_parser():
     p_register.add_argument(
         "--proof-interval",
         type=int,
-        default=60,
-        help="the proof interval in seconds, default 60",
+        default=DEFAULT_PROOF_INTERVAL_SECONDS,
+        help=(
+            "the proof interval in seconds, "
+            f"default {DEFAULT_PROOF_INTERVAL_SECONDS}"
+        ),
     )
     p_register.add_argument(
         "--missed-limit",
         type=int,
-        default=5,
-        help="the missed proof limit that warrants kill, default 5",
+        default=DEFAULT_MISSED_PROOF_LIMIT,
+        help=(
+            "the missed proof limit that warrants kill, "
+            f"default {DEFAULT_MISSED_PROOF_LIMIT}"
+        ),
     )
     p_register.add_argument(
         "--soft-ceiling",

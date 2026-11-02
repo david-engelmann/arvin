@@ -10,10 +10,13 @@ cycle, and publishes by renaming a complete temporary file over
 the state file. Reads take a shared lock and open the state file
 fresh each time, and a reader that changes nothing never writes.
 
-Time is an input. Every operation takes the current instant as an
-argument, and this module reads no wall clock, draws no
-randomness, and calls no model. The stage an evaluation reports is
-a deterministic function of the recorded state and the instant.
+Time is an input. Every operation but the log read takes the
+current instant as an argument, and this module reads no wall
+clock and calls no model. The one random draw in the module
+names a temporary file at publication, and it reaches no stage,
+no reason, no record, and no state byte. The stage an evaluation
+reports is a deterministic function of the recorded state and
+the instant.
 
 The stage vocabulary is program vocabulary and stands in one
 exact order in STAGES. The trigger names of DM-3 stand in
@@ -41,6 +44,14 @@ RECORD_KINDS = {"registered", "proof", "spend", "pull", "stage"}
 
 DEFAULT_PROOF_INTERVAL_SECONDS = 60
 DEFAULT_MISSED_PROOF_LIMIT = 5
+
+PROOF_INTERVAL_MAX_SECONDS = 86_399_999_999_999
+SPEND_MAX = 10**18
+
+# The stage a missed proof count below the limit warrants under
+# DM-3, keyed by the count itself, with every higher count below
+# the limit standing at the last entry.
+MISSED_COUNT_STAGES = {1: "warn", 2: "throttle", 3: "cut tools", 4: "cut budget"}
 
 NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9_-]*[a-z0-9])?$")
 
@@ -136,6 +147,14 @@ def _validate_now(now):
     return now
 
 
+def _printable(value):
+    """Repr a request value for an error message, however large it stands."""
+    try:
+        return repr(value)
+    except ValueError:
+        return "a value too large to print"
+
+
 def _validate_positive_int(value, field):
     if not _is_int(value) or value < 1:
         raise InvalidRequestError(
@@ -160,8 +179,14 @@ def _validate_note(note):
     return note
 
 
-def _format_instant(moment):
-    return moment.astimezone(timezone.utc).isoformat()
+def format_instant(moment):
+    """Format an instant in UTC, refusing one outside the recorded range."""
+    try:
+        return moment.astimezone(timezone.utc).isoformat()
+    except OverflowError:
+        raise InvalidRequestError(
+            "the instant stands outside the range the switch can record"
+        ) from None
 
 
 def _parse_instant(text, corrupt):
@@ -212,7 +237,7 @@ def _validate_record(record, position):
     if not _is_int(record["seq"]) or record["seq"] != position + 1:
         raise _corrupt("the log sequence does not grow by 1 from 1 without gaps")
     kind = record["kind"]
-    if kind not in RECORD_KINDS:
+    if not isinstance(kind, str) or kind not in RECORD_KINDS:
         raise _corrupt(f"a log record holds an unknown kind {kind!r}")
     _parse_instant(record["at"], _corrupt)
     if record["stage"] not in STAGES:
@@ -256,7 +281,11 @@ def _validate_run(run):
         and run["soft_ceiling"] > run["hard_ceiling"]
     ):
         raise _corrupt(f"run {run['id']!r} holds a soft ceiling above its hard ceiling")
-    if not _is_int(run["spend_total"]) or run["spend_total"] < 0:
+    if (
+        not _is_int(run["spend_total"])
+        or run["spend_total"] < 0
+        or run["spend_total"] > SPEND_MAX
+    ):
         raise _corrupt(f"run {run['id']!r} holds an invalid spend total")
     if run["last_proof_at"] is not None:
         _parse_instant(run["last_proof_at"], _corrupt)
@@ -304,11 +333,17 @@ def _missed_proofs(run, now):
     """Whole proof intervals missed at the instant, deadline exact counts zero."""
     base_text = run["last_proof_at"] or run["registered_at"]
     base = _parse_instant(base_text, _corrupt)
-    interval = timedelta(seconds=run["proof_interval_seconds"])
-    delta = now - base
-    if delta <= interval:
-        return 0
-    return (delta - timedelta(microseconds=1)) // interval
+    try:
+        interval = timedelta(seconds=run["proof_interval_seconds"])
+        delta = now - base
+        if delta <= interval:
+            return 0
+        return (delta - timedelta(microseconds=1)) // interval
+    except OverflowError:
+        raise InvalidRequestError(
+            "the missed proof count at this instant stands outside the "
+            "range the switch can represent"
+        ) from None
 
 
 def _warrant(run, now):
@@ -329,7 +364,8 @@ def _warrant(run, now):
         if missed >= run["missed_proof_limit"]:
             index = max(index, STAGES.index("kill"))
         else:
-            index = max(index, min(missed, STAGES.index("cut budget")))
+            warranted = MISSED_COUNT_STAGES[min(missed, 4)]
+            index = max(index, STAGES.index(warranted))
     return index, reasons
 
 
@@ -367,7 +403,7 @@ class Switch:
             document = json.loads(raw, object_pairs_hook=_object_without_duplicate_keys)
         except _DuplicateKeyError as exc:
             raise _corrupt(f"a key stands twice in the document, {exc}") from exc
-        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        except ValueError as exc:
             raise _corrupt(f"the document does not parse, {exc}") from exc
         return _validate_document(document)
 
@@ -418,7 +454,7 @@ class Switch:
             {
                 "seq": len(run["log"]) + 1,
                 "kind": kind,
-                "at": _format_instant(now),
+                "at": format_instant(now),
                 "stage": stage,
                 "reasons": list(reasons),
                 "model_name": None,
@@ -445,6 +481,12 @@ class Switch:
         """Open a run record and record the registration."""
         validate_name(run_id)
         _validate_positive_int(proof_interval_seconds, "proof interval")
+        if proof_interval_seconds > PROOF_INTERVAL_MAX_SECONDS:
+            raise InvalidRequestError(
+                f"invalid proof interval {_printable(proof_interval_seconds)}, "
+                f"use a positive integer of at most "
+                f"{PROOF_INTERVAL_MAX_SECONDS} seconds"
+            )
         _validate_positive_int(missed_proof_limit, "missed proof limit")
         _validate_ceiling(soft_ceiling, "soft ceiling")
         _validate_ceiling(hard_ceiling, "hard ceiling")
@@ -463,7 +505,7 @@ class Switch:
                 raise RefusalError(f"run {run_id!r} already stands in the state file")
             run = {
                 "id": run_id,
-                "registered_at": _format_instant(now),
+                "registered_at": format_instant(now),
                 "proof_interval_seconds": proof_interval_seconds,
                 "missed_proof_limit": missed_proof_limit,
                 "soft_ceiling": soft_ceiling,
@@ -492,7 +534,7 @@ class Switch:
                 if run["last_proof_at"] is None or now > _parse_instant(
                     run["last_proof_at"], _corrupt
                 ):
-                    run["last_proof_at"] = _format_instant(now)
+                    run["last_proof_at"] = format_instant(now)
             self._append_record(run, "proof", now, run["stage"], [])
             return None
 
@@ -501,14 +543,20 @@ class Switch:
     def spend(self, run_id, amount, now):
         """Record a spend report and return the accumulated spend."""
         validate_name(run_id)
-        if not _is_int(amount) or amount < 0:
+        if not _is_int(amount) or amount < 0 or amount > SPEND_MAX:
             raise InvalidRequestError(
-                f"invalid spend amount {amount!r}, use a nonnegative integer"
+                f"invalid spend amount {_printable(amount)}, use a "
+                f"nonnegative integer of at most {SPEND_MAX}"
             )
 
         def action(document):
             run = self._require_run(document, run_id)
             if not run["killed"]:
+                if run["spend_total"] + amount > SPEND_MAX:
+                    raise InvalidRequestError(
+                        f"the spend report of {amount} would carry the "
+                        f"accumulated spend of run {run_id!r} past {SPEND_MAX}"
+                    )
                 run["spend_total"] += amount
             self._append_record(run, "spend", now, run["stage"], [])
             return run["spend_total"]
