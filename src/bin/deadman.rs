@@ -20,7 +20,10 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use deadman::{py_repr_str, Error, Instant, Switch, Value};
+use deadman::{
+    py_repr_str, Error, Instant, Switch, Value, DEFAULT_MISSED_PROOF_LIMIT,
+    DEFAULT_PROOF_INTERVAL_SECONDS,
+};
 
 const MAIN_USAGE: &str =
     "usage: deadman [-h] --state STATE {register,prove,spend,pull,stage,log} ...";
@@ -699,10 +702,10 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
         "register" => {
             let proof_interval = option_int(&args, "--proof-interval")
                 .cloned()
-                .unwrap_or(Value::Int(60));
+                .unwrap_or(Value::Int(DEFAULT_PROOF_INTERVAL_SECONDS as i128));
             let missed_limit = option_int(&args, "--missed-limit")
                 .cloned()
-                .unwrap_or(Value::Int(5));
+                .unwrap_or(Value::Int(DEFAULT_MISSED_PROOF_LIMIT as i128));
             let soft_ceiling = option_int(&args, "--soft-ceiling")
                 .cloned()
                 .unwrap_or(Value::Null);

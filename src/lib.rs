@@ -1017,10 +1017,15 @@ pub struct Instant {
 }
 
 impl Instant {
-    /// Build an instant from civil parts. The parts are taken as
-    /// stated, the way a datetime constructor's caller hands
-    /// valid parts, and the offset is the offset from UTC in
-    /// microseconds, or None for a naive reading. The eight
+    /// Build an instant from civil parts, refusing any part
+    /// outside the ranges the parser itself accepts, so a caller
+    /// handing absurd parts gets a typed refusal instead of a
+    /// computation that panics or wraps. The ranges are the
+    /// years 1 through 9999, the month and day of a real date,
+    /// an hour under 24, a minute and a second under 60,
+    /// microseconds under a second, and an offset under a day
+    /// in either direction. The offset is the offset from UTC
+    /// in microseconds, or None for a naive reading. The eight
     /// parts are the fields of the reading itself, so they stand
     /// as parameters rather than a parts structure.
     #[allow(clippy::too_many_arguments)]
@@ -1033,13 +1038,31 @@ impl Instant {
         second: u32,
         micros: u32,
         offset_micros: Option<i64>,
-    ) -> Instant {
-        Instant {
+    ) -> Result<Instant> {
+        let offset_in_range = match offset_micros {
+            None => true,
+            Some(offset) => offset > -86_400_000_000 && offset < 86_400_000_000,
+        };
+        let parts_in_range = (1..=9999).contains(&year)
+            && (1..=12).contains(&month)
+            && day >= 1
+            && day <= days_in_month(year, month)
+            && hour <= 23
+            && minute <= 59
+            && second <= 59
+            && micros <= 999_999
+            && offset_in_range;
+        if !parts_in_range {
+            return Err(Error::InvalidRequest(
+                "the civil parts do not form an instant the switch can record".to_string(),
+            ));
+        }
+        Ok(Instant {
             days: days_from_civil(year, month, day),
             secs: hour * 3600 + minute * 60 + second,
             micros,
             offset_micros,
-        }
+        })
     }
 
     /// The current instant in UTC, the one clock read the command

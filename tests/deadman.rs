@@ -20,7 +20,7 @@ use deadman::{
 };
 
 fn t0() -> Instant {
-    Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, Some(0))
+    Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, Some(0)).expect("the test instant is in range")
 }
 
 fn at(seconds: i64) -> Instant {
@@ -916,7 +916,8 @@ fn a_note_at_the_bound_is_accepted_and_past_it_refused() {
 fn a_naive_instant_is_refused() {
     let dir = TestDir::new("naive-instant");
     let switch = make_switch(&dir);
-    let naive = Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, None);
+    let naive =
+        Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, None).expect("the test instant is in range");
     assert_invalid_request(register_values(
         &switch,
         &text("run-a"),
@@ -989,7 +990,8 @@ fn the_cli_refuses_an_interval_past_the_bound_without_a_traceback() {
 fn an_instant_whose_utc_form_overflows_is_refused() {
     let dir = TestDir::new("utc-overflow");
     let switch = make_switch(&dir);
-    let extreme = Instant::from_civil(9999, 12, 31, 23, 0, 0, 0, Some(-14 * 3600 * 1_000_000));
+    let extreme = Instant::from_civil(9999, 12, 31, 23, 0, 0, 0, Some(-14 * 3600 * 1_000_000))
+        .expect("the test instant is in range");
     assert_invalid_request(register_values(
         &switch,
         &text("run-a"),

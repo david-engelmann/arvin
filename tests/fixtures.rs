@@ -17,7 +17,7 @@ use deadman::{Error, Instant, Switch, Value};
 use sha2::{Digest, Sha256};
 
 fn t0() -> Instant {
-    Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, Some(0))
+    Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, Some(0)).expect("the test instant is in range")
 }
 
 fn at(seconds: i64) -> Instant {
