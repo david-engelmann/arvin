@@ -1,0 +1,25 @@
+[package]
+name = "deadman"
+version = "0.1.0"
+edition = "2021"
+description = "A dead man's switch that escalates in stages when proofs stop"
+license = "MIT"
+
+[lib]
+name = "deadman"
+path = "src/lib.rs"
+
+[[bin]]
+name = "deadman"
+path = "src/bin/deadman.rs"
+
+[[bin]]
+name = "codepoint_scan"
+path = "src/bin/codepoint_scan.rs"
+
+[dependencies]
+fs2 = "0.4"
+getrandom = "0.3"
+
+[dev-dependencies]
+sha2 = "0.10"

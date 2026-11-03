@@ -1,0 +1,72 @@
+{
+  "format": "deadman-state/1",
+  "runs": [
+    {
+      "id": "run-a",
+      "registered_at": "2031-05-04T12:00:00+00:00",
+      "proof_interval_seconds": 60,
+      "missed_proof_limit": 5,
+      "soft_ceiling": null,
+      "hard_ceiling": 10,
+      "spend_total": 10,
+      "last_proof_at": null,
+      "stage": "kill",
+      "clear_streak": 0,
+      "killed": true,
+      "log": [
+        {
+          "seq": 1,
+          "kind": "registered",
+          "at": "2031-05-04T12:00:00+00:00",
+          "stage": "none",
+          "reasons": [],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        },
+        {
+          "seq": 2,
+          "kind": "spend",
+          "at": "2031-05-04T12:00:01+00:00",
+          "stage": "none",
+          "reasons": [],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        },
+        {
+          "seq": 3,
+          "kind": "stage",
+          "at": "2031-05-04T12:00:02+00:00",
+          "stage": "kill",
+          "reasons": [
+            "hard ceiling"
+          ],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        },
+        {
+          "seq": 4,
+          "kind": "spend",
+          "at": "2031-05-04T12:00:03+00:00",
+          "stage": "kill",
+          "reasons": [],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        },
+        {
+          "seq": 5,
+          "kind": "proof",
+          "at": "2031-05-04T12:00:04+00:00",
+          "stage": "kill",
+          "reasons": [],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        }
+      ]
+    }
+  ]
+}

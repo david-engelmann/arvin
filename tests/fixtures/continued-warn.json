@@ -1,0 +1,62 @@
+{
+  "format": "deadman-state/1",
+  "runs": [
+    {
+      "id": "run-a",
+      "registered_at": "2031-05-04T12:00:00+00:00",
+      "proof_interval_seconds": 60,
+      "missed_proof_limit": 5,
+      "soft_ceiling": null,
+      "hard_ceiling": null,
+      "spend_total": 0,
+      "last_proof_at": "2031-05-04T12:01:01+00:00",
+      "stage": "none",
+      "clear_streak": 0,
+      "killed": false,
+      "log": [
+        {
+          "seq": 1,
+          "kind": "registered",
+          "at": "2031-05-04T12:00:00+00:00",
+          "stage": "none",
+          "reasons": [],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        },
+        {
+          "seq": 2,
+          "kind": "stage",
+          "at": "2031-05-04T12:01:01+00:00",
+          "stage": "warn",
+          "reasons": [
+            "missed proofs"
+          ],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        },
+        {
+          "seq": 3,
+          "kind": "proof",
+          "at": "2031-05-04T12:01:01+00:00",
+          "stage": "warn",
+          "reasons": [],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        },
+        {
+          "seq": 4,
+          "kind": "stage",
+          "at": "2031-05-04T12:01:01+00:00",
+          "stage": "none",
+          "reasons": [],
+          "model_name": null,
+          "model_confidence": null,
+          "fallback_taken": null
+        }
+      ]
+    }
+  ]
+}
