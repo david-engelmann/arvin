@@ -155,23 +155,64 @@ fn decimal_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
     Ok(text)
 }
 
-/// Keep an integer argument whole, at 128 bit width when it fits
-/// and as its canonical decimal text when it does not, the way
-/// the command line converter keeps it, so a later library
+/// Keep an integer argument whole, at 128 bit width when it
+/// fits and as decimal text when it does not, the way the
+/// command line converter keeps it, so a later library
 /// validation prints the number the caller typed rather than a
-/// conversion failure at this layer. A value that is no integer
-/// at all fails extraction as a plain type error.
+/// conversion failure at this layer.
+///
+/// The integer shape is judged on the value itself before any
+/// extraction, because the extraction reaches an object that
+/// is no integer partway through its index protocol and
+/// refuses it with a message from its own machinery. A value
+/// that is no integer fails here with the interpreter's own
+/// wording for a value that cannot be read as an integer.
 fn integer_value(value: &Bound<'_, PyAny>) -> PyResult<Value> {
+    if !value.is_instance_of::<PyInt>() {
+        return Err(PyTypeError::new_err(format!(
+            "'{}' object cannot be interpreted as an integer",
+            value.get_type().name()?
+        )));
+    }
     match value.extract::<i128>() {
         Ok(number) => Ok(Value::Int(number)),
-        Err(err) => {
-            if value.is_instance_of::<PyInt>() {
-                Ok(Value::BigInt(decimal_text(value)?))
-            } else {
-                Err(err)
-            }
-        }
+        Err(_) => Ok(Value::BigInt(wide_text(value)?)),
     }
+}
+
+/// The decimal text of an integer too wide for the 128 bit
+/// width.
+///
+/// At or below the digit cap the library prints, the text is
+/// the value's own digits from decimal_text. Past the cap the
+/// digits stand in nothing the library decides or prints. A
+/// big integer is judged at every bound by its sign alone,
+/// its printed form past the cap is the standing phrase a
+/// value too large to print, and no validator admits one into
+/// the state, so the text stands as a one followed by enough
+/// zeros to carry the digit count past the cap, signed as the
+/// value is signed, and the digit conversion is skipped
+/// before its cost can grow with the square of the width.
+/// The width and the sign are read through the int type
+/// itself, as decimal_text reads them, so an override on a
+/// subclass cannot stand in for either.
+fn wide_text(value: &Bound<'_, PyAny>) -> PyResult<String> {
+    let int_type = value.py().get_type::<PyInt>();
+    let bits: usize = int_type.call_method1("bit_length", (value,))?.extract()?;
+    // A value of 14287 or more bits holds at least 4301
+    // digits, past the 4300 digit cap py_printable applies,
+    // with two bits of margin under the exact bound.
+    if bits > 14_286 {
+        let negative: bool = int_type.call_method1("__lt__", (value, 0))?.extract()?;
+        let mut text = String::with_capacity(4303);
+        if negative {
+            text.push('-');
+        }
+        text.push('1');
+        text.push_str(&"0".repeat(4301));
+        return Ok(text);
+    }
+    decimal_text(value)
 }
 
 /// Resolve an integer argument of a call, refusing a boolean

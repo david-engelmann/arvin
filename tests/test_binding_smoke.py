@@ -55,6 +55,13 @@ class ForgedBitLengthInt(int):
         return 8
 
 
+class IndexOnly:
+    """An object that is no integer and only answers __index__."""
+
+    def __index__(self):
+        return 5
+
+
 def record(seq, kind, at, stage, reasons):
     return {
         "seq": seq,
@@ -354,6 +361,18 @@ def test_wide_integer_digits_come_from_the_value_not_its_methods(tmp_path):
         "invalid spend amount " + whole + spend_tail
     )
 
+    with pytest.raises(deadman.InvalidRequestError) as past_cap:
+        deadman.spend(state, "run-a", 10**100000, T0)
+    assert str(past_cap.value) == (
+        "invalid spend amount a value too large to print" + spend_tail
+    )
+
+    with pytest.raises(deadman.InvalidRequestError) as past_cap_negative:
+        deadman.spend(state, "run-a", -(10**100000), T0)
+    assert str(past_cap_negative.value) == (
+        "invalid spend amount a value too large to print" + spend_tail
+    )
+
     with pytest.raises(deadman.InvalidRequestError) as wide_ceiling:
         deadman.register(state, "run-b", T0, soft_ceiling=10**5000)
     assert str(wide_ceiling.value) == (
@@ -367,6 +386,37 @@ def test_wide_integer_digits_come_from_the_value_not_its_methods(tmp_path):
     assert str(wide_interval.value) == (
         "invalid proof interval a value too large to print, use a "
         "positive integer"
+    )
+
+    assert deadman.spend(state, "run-a", 5, T0) == 5
+
+
+def test_integer_arguments_reject_non_integers(tmp_path):
+    state = str(tmp_path / "state.json")
+    deadman.register(state, "run-a", T0)
+
+    with pytest.raises(TypeError) as indexed:
+        deadman.spend(state, "run-a", IndexOnly(), T0)
+    assert str(indexed.value) == (
+        "'IndexOnly' object cannot be interpreted as an integer"
+    )
+
+    with pytest.raises(TypeError) as floated:
+        deadman.spend(state, "run-a", 1.5, T0)
+    assert str(floated.value) == (
+        "'float' object cannot be interpreted as an integer"
+    )
+
+    with pytest.raises(TypeError) as spelled:
+        deadman.spend(state, "run-a", "60", T0)
+    assert str(spelled.value) == (
+        "'str' object cannot be interpreted as an integer"
+    )
+
+    with pytest.raises(TypeError) as indexed_interval:
+        deadman.register(state, "run-b", T0, proof_interval=IndexOnly())
+    assert str(indexed_interval.value) == (
+        "'IndexOnly' object cannot be interpreted as an integer"
     )
 
     assert deadman.spend(state, "run-a", 5, T0) == 5
