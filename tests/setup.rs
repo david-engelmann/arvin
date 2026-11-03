@@ -110,6 +110,22 @@ fn readme_status_states_one_of_one_hundred() {
     assert!(status.contains("aa48f0fe5d57b8bc0e01db2c687ed128e1e0f2d4"));
 }
 
+/// Whether an `if:` value disables its step or job. The value
+/// is read through its quote marks and through the expression
+/// wrapper GitHub Actions accepts, because a step disabled as
+/// ${{ false }} is skipped exactly as one disabled as false.
+fn if_value_is_false(value: &str) -> bool {
+    let value = value
+        .trim()
+        .trim_matches(|c| c == '\'' || c == '"')
+        .trim_start_matches("${{")
+        .trim_end_matches("}}")
+        .trim()
+        .trim_matches(|c| c == '\'' || c == '"')
+        .to_lowercase();
+    value == "false"
+}
+
 fn flush_step(step_lines: &mut Vec<String>, commands: &mut Vec<String>) {
     if step_lines.is_empty() {
         return;
@@ -118,16 +134,12 @@ fn flush_step(step_lines: &mut Vec<String>, commands: &mut Vec<String>) {
     let mut runs = Vec::new();
     for stripped in step_lines.iter() {
         if let Some(value) = stripped.strip_prefix("if:") {
-            let value = value
-                .trim()
-                .trim_matches(|c| c == '\'' || c == '"')
-                .to_lowercase();
-            if value == "false" {
+            if if_value_is_false(value) {
                 disabled = true;
             }
         }
-        if let Some(pos) = stripped.find("run:") {
-            runs.push(stripped[pos + "run:".len()..].trim().to_string());
+        if let Some(command) = stripped.strip_prefix("run:") {
+            runs.push(command.trim().to_string());
         }
     }
     if !disabled {
@@ -155,11 +167,8 @@ fn run_commands(ci_text: &str) -> Vec<String> {
             let value = stripped
                 .split_once(':')
                 .map(|(_, rest)| rest)
-                .unwrap_or_default()
-                .trim()
-                .trim_matches(|c| c == '\'' || c == '"')
-                .to_lowercase();
-            if value == "false" {
+                .unwrap_or_default();
+            if if_value_is_false(value) {
                 job_disabled = true;
             }
             continue;
@@ -203,7 +212,9 @@ fn ci_carries_the_fleet_credential_hygiene() {
     // than a moving branch name.
     assert!(text.contains("permissions:"));
     assert!(text.contains("contents: read"));
-    assert!(text.contains("persist-credentials: false"));
+    assert!(text
+        .lines()
+        .any(|line| line.trim() == "persist-credentials: false"));
     assert!(!text.contains("rust-toolchain@master"));
     let toolchain_line = text
         .lines()
@@ -225,7 +236,7 @@ fn ci_gate_parser_skips_a_step_disabled_with_if_false() {
     let ci_text = read(".github/workflows/ci.yml");
     let gate_step = "      - name: Run the local gate\n        run: cargo test";
     assert!(ci_text.contains(gate_step));
-    for flag in ["false", "\"false\""] {
+    for flag in ["false", "\"false\"", "${{ false }}", "${{false}}"] {
         let disabled = ci_text.replace(
             gate_step,
             &format!(
@@ -243,7 +254,7 @@ fn ci_gate_parser_rejects_a_job_disabled_with_if_false() {
     let ci_text = read(".github/workflows/ci.yml");
     let job_head = "  test:\n    runs-on: ubuntu-latest";
     assert!(ci_text.contains(job_head));
-    for flag in ["false", "\"false\""] {
+    for flag in ["false", "\"false\"", "${{ false }}", "${{false}}"] {
         let disabled = ci_text.replace(
             job_head,
             &format!("  test:\n    if: {flag}\n    runs-on: ubuntu-latest"),

@@ -1323,9 +1323,6 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
 /// None stands for every refusal the Python parser raises.
 pub fn parse_instant(text: &str) -> Option<Instant> {
     let bytes = text.as_bytes();
-    if bytes.iter().any(|byte| !byte.is_ascii()) {
-        return None;
-    }
     let (days, mut pos) = parse_date(bytes, 0)?;
     let (mut secs, mut micros) = (0u32, 0u32);
     let mut offset_micros: Option<i64> = None;
@@ -1338,8 +1335,11 @@ pub fn parse_instant(text: &str) -> Option<Instant> {
         });
     }
     // The separator between the date and the time is any single
-    // character, the Python parser's own reading.
-    pos += 1;
+    // character, the Python parser's own reading, so the advance
+    // is by the character's own length. Every other position in
+    // the grammar accepts ASCII only, so a non-ASCII byte anywhere
+    // else still refuses.
+    pos += text[pos..].chars().next()?.len_utf8();
     let (hours, next) = digit2(bytes, pos)?;
     pos = next;
     let mut minutes = 0u32;
@@ -2345,22 +2345,35 @@ impl Switch {
             name.push_str(&format!("{byte:02x}"));
         }
         let temp = self.path.with_file_name(name);
-        let outcome = (|| -> std::io::Result<()> {
-            // The temporary file is opened exclusively, so a
-            // plant standing at the name fails the publish
-            // instead of being followed and written through, the
-            // deliberate divergence the port amendment records.
+        // The temporary file is opened exclusively, so a plant
+        // standing at the name fails the publish instead of being
+        // followed and written through, the deliberate divergence
+        // the port amendment records.
+        let written = (|| -> std::io::Result<()> {
             let mut handle = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&temp)?;
             handle.write_all(text.as_bytes())?;
             handle.sync_all()?;
-            drop(handle);
-            std::fs::rename(&temp, &self.path)?;
             Ok(())
         })();
-        if let Err(err) = outcome {
+        if let Err(err) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(Error::Failure(format!(
+                "the state file cannot be published, {err}"
+            )));
+        }
+        // The held lock's identity is verified once more with the
+        // rename as the very next step, so the window between the
+        // check and the publication stands as narrow as the
+        // design can make it. A failure here leaves the state
+        // unchanged under the identity error's own message.
+        if let Err(err) = guard.verify() {
+            let _ = std::fs::remove_file(&temp);
+            return Err(err);
+        }
+        if let Err(err) = std::fs::rename(&temp, &self.path) {
             let _ = std::fs::remove_file(&temp);
             return Err(Error::Failure(format!(
                 "the state file cannot be published, {err}"

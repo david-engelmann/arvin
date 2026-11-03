@@ -16,6 +16,7 @@
 //! whitespace families of the Python int grammar, probed against
 //! the Python runtime before the port was written.
 
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -400,6 +401,16 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
             };
             match resolve_long(name, &candidates) {
                 Ok(Some("--help")) => {
+                    if let Some(value) = inline_value {
+                        return Err(parser_error(
+                            sub_usage(command),
+                            &format!("deadman {command}"),
+                            format!(
+                                "argument -h/--help: ignored explicit argument {}",
+                                py_repr_str(&value)
+                            ),
+                        ));
+                    }
                     println!("{}", sub_help(command));
                     std::process::exit(0);
                 }
@@ -528,24 +539,25 @@ fn report_error(error: &Error) -> ExitCode {
 }
 
 fn run() -> ExitCode {
-    let argv: Vec<String> = std::env::args_os()
-        .skip(1)
+    let os_argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let argv: Vec<String> = os_argv
+        .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    match dispatch(&argv) {
+    match dispatch(&argv, &os_argv) {
         Ok(code) => code,
         Err(error) => report_error(&error),
     }
 }
 
-fn dispatch(argv: &[String]) -> Result<ExitCode, Error> {
+fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode, Error> {
     // Parse the top level: the state option and the subcommand
     // word, with the remaining tokens handed to the subcommand.
     // A double dash standing where the subcommand word is
     // expected is taken as the subcommand word itself, and a
     // double dash with nothing after it is taken as nothing,
     // both as the Python parser took them.
-    let mut state_path: Option<String> = None;
+    let mut state_path: Option<PathBuf> = None;
     let mut index = 0;
     let mut command: Option<String> = None;
     let mut rest: Vec<String> = Vec::new();
@@ -573,15 +585,33 @@ fn dispatch(argv: &[String]) -> Result<ExitCode, Error> {
             };
             match resolve_long(name, &["--help", "--state"]) {
                 Ok(Some("--help")) => {
+                    if let Some(value) = inline_value {
+                        return Ok(parser_fail(
+                            MAIN_USAGE,
+                            "deadman",
+                            &format!(
+                                "argument -h/--help: ignored explicit argument {}",
+                                py_repr_str(&value)
+                            ),
+                        ));
+                    }
                     println!("{MAIN_HELP}");
                     return Ok(ExitCode::from(0));
                 }
                 Ok(Some("--state")) => {
-                    if let Some(value) = inline_value {
-                        state_path = Some(value);
+                    if inline_value.is_some() {
+                        // The state value is carried as the raw
+                        // argument bytes, so a state path that is
+                        // not valid UTF-8 names the file the caller
+                        // named, as the Python surface names it.
+                        let raw = os_argv[index].as_bytes();
+                        let at = raw.iter().position(|byte| *byte == b'=').unwrap();
+                        state_path = Some(PathBuf::from(std::ffi::OsString::from_vec(
+                            raw[at + 1..].to_vec(),
+                        )));
                         index += 1;
                     } else if index + 1 < argv.len() && !is_option_like(&argv[index + 1]) {
-                        state_path = Some(argv[index + 1].clone());
+                        state_path = Some(PathBuf::from(os_argv[index + 1].clone()));
                         index += 2;
                     } else {
                         return Ok(parser_fail(
@@ -661,7 +691,7 @@ fn dispatch(argv: &[String]) -> Result<ExitCode, Error> {
             &format!("unrecognized arguments: {}", extras.join(" ")),
         ));
     }
-    let switch = Switch::new(PathBuf::from(state_path.unwrap()));
+    let switch = Switch::new(state_path.unwrap());
     let now = Instant::now_utc();
     let run = args.positionals.first().cloned().unwrap_or_default();
     let run_value = Value::Str(run.clone());

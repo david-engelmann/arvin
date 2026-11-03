@@ -1595,3 +1595,71 @@ fn cli_error_exits_and_messages() {
     );
     assert!(stderr.starts_with("error:"), "{stderr}");
 }
+
+#[test]
+fn a_stored_instant_with_a_non_ascii_separator_reads() {
+    // The Python instant reader takes any single character as
+    // the separator between the date and the time, including a
+    // character outside ASCII. A stored spelling that uses one
+    // reads as the instant it names, evaluates, and stands
+    // unchanged when the state is published again.
+    let dir = TestDir::new("non-ascii-separator");
+    let state = state_path(&dir);
+    let switch = Switch::new(state.clone());
+    switch
+        .register(
+            &text("run-a"),
+            &t0(),
+            &int(60),
+            &int(5),
+            &Value::Null,
+            &Value::Null,
+        )
+        .unwrap();
+    let written =
+        state_text(&dir).replace("2031-05-04T12:00:00+00:00", "2031-05-04é12:00:00+00:00");
+    std::fs::write(&state, &written).unwrap();
+    let report = switch.stage(&text("run-a"), &at(61)).unwrap();
+    assert_eq!(report.stage, "warn");
+    // The spelling stands in its escaped written form, as the
+    // writer escapes every character outside ASCII.
+    assert!(state_text(&dir).contains("2031-05-04\\u00e912:00:00+00:00"));
+}
+
+#[test]
+fn cli_rejects_an_explicit_value_on_the_help_option() {
+    let dir = TestDir::new("help-value");
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let (_, stderr) = run_cli(&["--help=x"], 2);
+    assert!(
+        stderr.contains("argument -h/--help: ignored explicit argument 'x'"),
+        "{stderr}"
+    );
+    let (_, stderr) = run_cli(&["--state", &state, "register", "--help=x"], 2);
+    assert!(
+        stderr.contains("argument -h/--help: ignored explicit argument 'x'"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn cli_addresses_a_state_path_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = TestDir::new("non-utf8-state");
+    let raw_name = std::ffi::OsString::from_vec(b"state-\xff.json".to_vec());
+    let state = dir.path().join(raw_name);
+    let output = Command::new(env!("CARGO_BIN_EXE_deadman"))
+        .arg("--state")
+        .arg(&state)
+        .args(["register", "run-a"])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        "registered run-a\n"
+    );
+    assert!(state.exists());
+    let document = std::fs::read_to_string(&state).unwrap();
+    assert!(document.contains("\"format\": \"deadman-state/1\""));
+}
