@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "deadman"
+version = "0.1.0"
+description = "A dead man's switch that escalates in stages when proofs stop"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+[tool.maturin]
+module-name = "deadman._deadman"
+python-source = "../python"
