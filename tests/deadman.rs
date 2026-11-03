@@ -793,6 +793,73 @@ valid_id_case!(valid_run_id_hyphenated, "run-1");
 valid_id_case!(valid_run_id_underscored, "a_b");
 valid_id_case!(valid_run_id_sixty_four_letters, &"r".repeat(64));
 valid_id_case!(valid_run_id_mixed_separators, "a-1_b-2");
+valid_id_case!(valid_run_id_leading_digit, "9run");
+valid_id_case!(valid_run_id_trailing_digit, "run9");
+valid_id_case!(valid_run_id_all_digits, "407");
+valid_id_case!(valid_run_id_digits_and_separators_inside, "r2-d2_c3");
+
+fn assert_invalid_name_message<T: std::fmt::Debug>(result: Result<T, Error>, expected: &str) {
+    match result {
+        Err(Error::InvalidName(message)) => assert_eq!(message, expected),
+        other => panic!("expected an invalid name error, got {other:?}"),
+    }
+}
+
+macro_rules! invalid_id_message_case {
+    ($name:ident, $bad:expr, $expected:expr) => {
+        #[test]
+        fn $name() {
+            let dir = TestDir::new("invalid-id-message");
+            let switch = make_switch(&dir);
+            let bad: Value = $bad;
+            assert_invalid_name_message(
+                register_values(
+                    &switch,
+                    &bad,
+                    &t0(),
+                    &int(60),
+                    &int(5),
+                    &Value::Null,
+                    &Value::Null,
+                ),
+                $expected,
+            );
+        }
+    };
+}
+
+invalid_id_message_case!(
+    invalid_run_id_non_ascii_letters_refused_with_exact_message,
+    text("rún-ü"),
+    "invalid run id 'rún-ü', use one component of ASCII lowercase letters \
+     and ASCII digits and hyphens and underscores, starting and ending \
+     with an ASCII lowercase letter or an ASCII digit, at most 64 \
+     characters long"
+);
+invalid_id_message_case!(
+    invalid_run_id_uppercase_ascii_refused_with_exact_message,
+    text("RUN-1"),
+    "invalid run id 'RUN-1', use one component of ASCII lowercase letters \
+     and ASCII digits and hyphens and underscores, starting and ending \
+     with an ASCII lowercase letter or an ASCII digit, at most 64 \
+     characters long"
+);
+invalid_id_message_case!(
+    invalid_run_id_non_ascii_digit_refused_with_exact_message,
+    text("run\u{0661}"),
+    "invalid run id 'run\u{0661}', use one component of ASCII lowercase \
+     letters and ASCII digits and hyphens and underscores, starting and \
+     ending with an ASCII lowercase letter or an ASCII digit, at most 64 \
+     characters long"
+);
+invalid_id_message_case!(
+    invalid_run_id_trailing_hyphen_refused_with_exact_message,
+    text("run-"),
+    "invalid run id 'run-', use one component of ASCII lowercase letters \
+     and ASCII digits and hyphens and underscores, starting and ending \
+     with an ASCII lowercase letter or an ASCII digit, at most 64 \
+     characters long"
+);
 
 macro_rules! invalid_registration_case {
     ($name:ident, $pi:expr, $ml:expr, $soft:expr, $hard:expr) => {
