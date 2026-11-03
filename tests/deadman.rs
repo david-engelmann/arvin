@@ -1005,6 +1005,58 @@ fn an_instant_whose_utc_form_overflows_is_refused() {
 }
 
 #[test]
+fn from_civil_accepts_parts_at_the_valid_bounds() {
+    let earliest = Instant::from_civil(1, 1, 1, 0, 0, 0, 0, Some(0)).unwrap();
+    assert_eq!(
+        format_instant(&earliest).unwrap(),
+        "0001-01-01T00:00:00+00:00"
+    );
+    let latest = Instant::from_civil(9999, 12, 31, 23, 59, 59, 999_999, Some(0)).unwrap();
+    assert_eq!(
+        format_instant(&latest).unwrap(),
+        "9999-12-31T23:59:59.999999+00:00"
+    );
+    let leap_day = Instant::from_civil(2032, 2, 29, 23, 59, 59, 999_999, None).unwrap();
+    assert!(!leap_day.is_aware());
+    let offset_edge = Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, Some(86_399_999_999)).unwrap();
+    assert!(offset_edge.is_aware());
+    let offset_edge_low =
+        Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, Some(-86_399_999_999)).unwrap();
+    assert!(offset_edge_low.is_aware());
+}
+
+#[test]
+fn from_civil_refuses_parts_past_the_valid_bounds() {
+    // Every refusal is the typed invalid request error. The
+    // absurd magnitudes here are the ones the standards probe
+    // drove against the pre repair constructor, an hour of
+    // 2_000_000 and a year of i64::MAX / 2, which panicked
+    // inside the second and day arithmetic.
+    let refused = [
+        (2031, 5, 4, 24, 0, 0, 0, Some(0)),
+        (2031, 5, 4, 2_000_000, 0, 0, 0, Some(0)),
+        (2031, 5, 4, 12, 60, 0, 0, Some(0)),
+        (2031, 5, 4, 12, 0, 60, 0, Some(0)),
+        (2031, 5, 4, 12, 0, 0, 1_000_000, Some(0)),
+        (2031, 0, 4, 12, 0, 0, 0, Some(0)),
+        (2031, 13, 4, 12, 0, 0, 0, Some(0)),
+        (2031, 5, 0, 12, 0, 0, 0, Some(0)),
+        (2031, 2, 29, 12, 0, 0, 0, Some(0)),
+        (0, 5, 4, 12, 0, 0, 0, Some(0)),
+        (10_000, 5, 4, 12, 0, 0, 0, Some(0)),
+        (i64::MAX / 2, 5, 4, 12, 0, 0, 0, Some(0)),
+        (2031, 5, 4, 12, 0, 0, 0, Some(86_400_000_000)),
+        (2031, 5, 4, 12, 0, 0, 0, Some(-86_400_000_000)),
+        (2031, 5, 4, 12, 0, 0, 0, Some(i64::MIN)),
+    ];
+    for (year, month, day, hour, minute, second, micros, offset) in refused {
+        assert_invalid_request(Instant::from_civil(
+            year, month, day, hour, minute, second, micros, offset,
+        ));
+    }
+}
+
+#[test]
 fn a_stored_interval_past_the_bound_fails_as_a_request_error() {
     let dir = TestDir::new("stored-interval");
     let valid = valid_document(&dir);
@@ -1556,6 +1608,19 @@ fn cli_walks_a_run_through_its_life() {
     assert!(lines[lines.len() - 1].starts_with("4 stage"));
     let (stdout, _) = run_cli(&["--state", &state, "pull", "run-a"], 0);
     assert_eq!(stdout.trim(), "stage kill");
+}
+
+#[test]
+fn cli_register_defaults_land_in_the_stored_document() {
+    let dir = TestDir::new("cli-register-defaults");
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    run_cli(&["--state", &state, "register", "run-a"], 0);
+    let document = state_text(&dir);
+    assert!(
+        document.contains("\"proof_interval_seconds\": 60"),
+        "{document}"
+    );
+    assert!(document.contains("\"missed_proof_limit\": 5"), "{document}");
 }
 
 #[test]
