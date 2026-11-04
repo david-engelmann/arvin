@@ -1759,6 +1759,394 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
     })
 }
 
+/// Whole proof intervals missed at an instant, counted under
+/// DM-3 from a base instant, deadline exact counts zero. The
+/// count is exact at every width the reader admits, because an
+/// interval wider than every span the recorded years hold
+/// misses nothing at any recorded instant.
+fn missed_count_between(base: &Instant, at: &Instant, interval: &JsonInt) -> i128 {
+    let interval_seconds = match interval {
+        JsonInt::Small(value) => *value,
+        JsonInt::Big(_) => return 0,
+    };
+    if interval_seconds >= 400_000_000_000 {
+        return 0;
+    }
+    let interval_micros = interval_seconds * 1_000_000;
+    let delta_micros = at.epoch_micros() - base.epoch_micros();
+    if delta_micros <= interval_micros {
+        0
+    } else {
+        (delta_micros - 1) / interval_micros
+    }
+}
+
+/// The stage index the missed proof count warrants under DM-3.
+fn missed_warrant_index(missed: i128, missed_proof_limit: i64) -> usize {
+    if missed < 1 {
+        0
+    } else if missed >= missed_proof_limit as i128 {
+        stage_index("kill")
+    } else {
+        stage_index(MISSED_COUNT_STAGES[(missed.min(4) - 1) as usize])
+    }
+}
+
+/// Join the decision log of one run against the standing fields
+/// of the run, as the Round 2 amendment under DM-7 states. The
+/// per record and per field validators have already judged each
+/// half on its own, and this pass replays the log once in
+/// sequence order after one preparatory scan that fixes the
+/// first record at kill and the live spend records, so its cost
+/// grows with the size of the log and never with its square.
+/// A proof record and a spend record stand live while no
+/// earlier record of the run stands at kill.
+#[allow(clippy::too_many_arguments)]
+fn validate_history_against_standing(
+    id_repr: &str,
+    log: &[Record],
+    standing_stage: &str,
+    spend_total: i64,
+    last_proof_at: &Option<String>,
+    clear_streak: &JsonInt,
+    soft_ceiling: Option<i64>,
+    hard_ceiling: Option<i64>,
+    proof_interval_seconds: &JsonInt,
+    missed_proof_limit: i64,
+    registered_at: &str,
+) -> Result<()> {
+    // One preparatory scan fixes the first record at kill and
+    // the first and last live spend positions. A record stands
+    // live while it stands before the first record at kill, so
+    // a spend counts towards the bounds only where no earlier
+    // record stands at kill and the record itself does not.
+    // Live spend positions stand in log order, so the first is
+    // the smallest and the last is the largest, and those two
+    // alone decide whether any live spend stands before or
+    // after any position the replay later judges.
+    let mut first_kill: Option<usize> = None;
+    let mut live_spend_bounds: (Option<usize>, Option<usize>) = (None, None);
+    for (position, record) in log.iter().enumerate() {
+        if first_kill.is_none() && record.stage == "kill" {
+            first_kill = Some(position);
+        }
+        if record.kind == "spend" && first_kill.is_none_or(|kill| position < kill) {
+            if live_spend_bounds.0.is_none() {
+                live_spend_bounds.0 = Some(position);
+            }
+            live_spend_bounds.1 = Some(position);
+        }
+    }
+    let is_live = |position: usize| first_kill.is_none_or(|kill| position < kill);
+    let registered_instant = parse_instant(registered_at).expect("a validated instant parses");
+    let mut live_proof_latest: Option<Instant> = None;
+    let mut live_proof_latest_text: Option<String> = None;
+    for (position, record) in log.iter().enumerate() {
+        if position > 0 && record.kind == "registered" {
+            return Err(corrupt(format!(
+                "run {id_repr} carries a second registered record at sequence {}",
+                record.seq
+            )));
+        }
+        if let Some(kill) = first_kill {
+            if position > kill && matches!(record.kind.as_str(), "stage" | "pull") {
+                return Err(corrupt(format!(
+                    "a {} record follows the kill record in the log of run \
+                     {id_repr}, where a closed run records only proof and spend \
+                     records",
+                    record.kind
+                )));
+            }
+        }
+        if position == 0 {
+            if record.kind == "proof" && is_live(position) {
+                let instant = parse_instant(&record.at).expect("a validated instant parses");
+                if live_proof_latest.is_none_or(|latest| instant > latest) {
+                    live_proof_latest = Some(instant);
+                    live_proof_latest_text = Some(record.at.clone());
+                }
+            }
+            continue;
+        }
+        let previous = &log[position - 1];
+        match record.kind.as_str() {
+            "proof" | "spend" => {
+                if record.stage != previous.stage {
+                    return Err(corrupt(format!(
+                        "a {} record in the log of run {id_repr} stands at stage \
+                         {}, not the stage {} the log had reached",
+                        record.kind, record.stage, previous.stage
+                    )));
+                }
+            }
+            "stage" => {
+                validate_stage_record_against_warrant(
+                    id_repr,
+                    record,
+                    &previous.stage,
+                    &live_proof_latest,
+                    &registered_instant,
+                    live_spend_bounds,
+                    position,
+                    spend_total,
+                    soft_ceiling,
+                    hard_ceiling,
+                    proof_interval_seconds,
+                    missed_proof_limit,
+                )?;
+            }
+            _ => {}
+        }
+        if record.kind == "proof" && is_live(position) {
+            let instant = parse_instant(&record.at).expect("a validated instant parses");
+            if live_proof_latest.is_none_or(|latest| instant > latest) {
+                live_proof_latest = Some(instant);
+                live_proof_latest_text = Some(record.at.clone());
+            }
+        }
+    }
+    let last = log.last().expect("a validated log holds a record");
+    if standing_stage != last.stage {
+        return Err(corrupt(format!(
+            "run {id_repr} stands at stage {standing_stage} where its log ends \
+             at stage {}",
+            last.stage
+        )));
+    }
+    let standing_proof = last_proof_at
+        .as_ref()
+        .map(|text| parse_instant(text).expect("a validated instant parses"));
+    if standing_proof != live_proof_latest {
+        return Err(match (last_proof_at, &live_proof_latest_text) {
+            (Some(standing), None) => corrupt(format!(
+                "run {id_repr} stands with a last proof at {} where its log \
+                 holds no live proof record",
+                py_repr_str(standing)
+            )),
+            (None, Some(expected)) => corrupt(format!(
+                "run {id_repr} stands with no last proof where its log holds \
+                 a live proof record at {}",
+                py_repr_str(expected)
+            )),
+            (Some(standing), Some(expected)) => corrupt(format!(
+                "run {id_repr} stands with a last proof at {} where its latest \
+                 live proof record stands at {}",
+                py_repr_str(standing),
+                py_repr_str(expected)
+            )),
+            (None, None) => unreachable!("equal instants reach no refusal"),
+        });
+    }
+    if live_spend_bounds.0.is_none() && spend_total != 0 {
+        return Err(corrupt(format!(
+            "run {id_repr} stands with spend total {spend_total} but its log \
+             holds no live spend record"
+        )));
+    }
+    if clear_streak.cmp_i128(1) == Ordering::Greater {
+        return Err(corrupt(format!(
+            "run {id_repr} holds a clear streak of {}, and no standing clear \
+             streak stands above 1",
+            py_printable(&json_int_value(clear_streak))
+        )));
+    }
+    if !clear_streak.is_zero() && matches!(standing_stage, "none" | "kill") {
+        return Err(corrupt(format!(
+            "run {id_repr} stands at stage {standing_stage} with a clear streak \
+             of {}, where a run at that stage holds a clear streak of 0",
+            py_printable(&json_int_value(clear_streak))
+        )));
+    }
+    Ok(())
+}
+
+/// Judge one stage record against the warrants at its instant,
+/// as the Round 2 amendment under DM-7 states. The missed proof
+/// warrant is exact, counted from the live proofs the replay
+/// had reached. The spend standing at the record is a range,
+/// standing at 0 where no live spend record stands before it
+/// and at the standing spend total where no live spend record
+/// stands after it, because a spend record carries no amount.
+#[allow(clippy::too_many_arguments)]
+fn validate_stage_record_against_warrant(
+    id_repr: &str,
+    record: &Record,
+    previous_stage: &str,
+    live_proof_latest: &Option<Instant>,
+    registered_instant: &Instant,
+    live_spend_bounds: (Option<usize>, Option<usize>),
+    position: usize,
+    spend_total: i64,
+    soft_ceiling: Option<i64>,
+    hard_ceiling: Option<i64>,
+    proof_interval_seconds: &JsonInt,
+    missed_proof_limit: i64,
+) -> Result<()> {
+    let previous_index = stage_index(previous_stage);
+    let new_index = stage_index(&record.stage);
+    let rises = new_index > previous_index;
+    let holds = new_index == previous_index && new_index != stage_index("none");
+    let steps_down = new_index + 1 == previous_index;
+    if !rises && !holds && !steps_down {
+        return Err(corrupt(format!(
+            "a stage record in the log of run {id_repr} follows stage \
+             {previous_stage} with stage {}, a succession no evaluation writes",
+            record.stage
+        )));
+    }
+    let warrant_order: [&str; 3] = ["hard ceiling", "soft ceiling", "missed proofs"];
+    let mut highest_rank: Option<usize> = None;
+    for reason in &record.reasons {
+        if reason == "operator pull" {
+            return Err(corrupt(format!(
+                "a stage record in the log of run {id_repr} names operator \
+                 pull, a reason no evaluation reports"
+            )));
+        }
+        let rank = warrant_order
+            .iter()
+            .position(|name| *name == reason.as_str())
+            .expect("a stage record reason stands among the warrant names");
+        if highest_rank.is_some_and(|highest| rank <= highest) {
+            return Err(corrupt(format!(
+                "a stage record in the log of run {id_repr} names its reasons \
+                 out of the order the warrant reports them"
+            )));
+        }
+        highest_rank = Some(rank);
+    }
+    let record_instant = parse_instant(&record.at).expect("a validated instant parses");
+    let base = live_proof_latest.unwrap_or(*registered_instant);
+    let missed = missed_count_between(&base, &record_instant, proof_interval_seconds);
+    let missed_named = record
+        .reasons
+        .iter()
+        .any(|reason| reason == "missed proofs");
+    if missed_named && missed == 0 {
+        return Err(corrupt(format!(
+            "a stage record in the log of run {id_repr} names missed proofs \
+             where no whole proof interval stands missed at its instant"
+        )));
+    }
+    if !missed_named && missed >= 1 {
+        return Err(corrupt(format!(
+            "a stage record in the log of run {id_repr} names no missed \
+             proofs where the missed proof count at its instant stands \
+             at {missed}"
+        )));
+    }
+    let (spend_low, spend_high) = match live_spend_bounds {
+        (None, None) => (0, 0),
+        (Some(first), Some(last)) => {
+            // The bounds stand in log order, so a live spend
+            // stands before this record exactly where the first
+            // one does and after it exactly where the last one
+            // does. A spend at the record position itself counts
+            // on neither side, as the strict comparisons state.
+            let before = first < position;
+            let after = last > position;
+            (
+                if after { 0 } else { spend_total },
+                if before { spend_total } else { 0 },
+            )
+        }
+        _ => unreachable!("the preparatory scan sets both bounds or neither"),
+    };
+    for (which, ceiling) in [("hard", hard_ceiling), ("soft", soft_ceiling)] {
+        let name = format!("{which} ceiling");
+        let named = record.reasons.iter().any(|reason| reason == &name);
+        match ceiling {
+            None => {
+                if named {
+                    return Err(corrupt(format!(
+                        "a stage record in the log of run {id_repr} names the \
+                         {which} ceiling where the run holds no {which} ceiling"
+                    )));
+                }
+            }
+            Some(ceiling) => {
+                if spend_high < ceiling && named {
+                    return Err(corrupt(format!(
+                        "a stage record in the log of run {id_repr} names the \
+                         {which} ceiling where the spend standing at the record \
+                         cannot reach it"
+                    )));
+                }
+                if spend_low >= ceiling && !named {
+                    return Err(corrupt(format!(
+                        "a stage record in the log of run {id_repr} names no \
+                         {which} ceiling, and the spend at the record reaches it"
+                    )));
+                }
+            }
+        }
+    }
+    // The ceilings the record names and the ceilings it does
+    // not name bound the spend at the record from both sides,
+    // because the warrant names every live trigger, so the
+    // warranted stage is judged against the range those bounds
+    // leave.
+    let mut bounded_low = spend_low;
+    let mut bounded_high = spend_high;
+    for (ceiling, name) in [
+        (hard_ceiling, "hard ceiling"),
+        (soft_ceiling, "soft ceiling"),
+    ] {
+        if let Some(ceiling) = ceiling {
+            if record.reasons.iter().any(|reason| reason == name) {
+                bounded_low = bounded_low.max(ceiling);
+            } else {
+                bounded_high = bounded_high.min(ceiling - 1);
+            }
+        }
+    }
+    if bounded_low > bounded_high {
+        return Err(corrupt(format!(
+            "a stage record in the log of run {id_repr} names ceiling reasons \
+             no spend standing at the record can carry together"
+        )));
+    }
+    let missed_index = missed_warrant_index(missed, missed_proof_limit);
+    let zero_threshold = soft_ceiling.or(hard_ceiling);
+    let mut spend_warrants: Vec<usize> = Vec::new();
+    if zero_threshold.is_none_or(|threshold| bounded_low < threshold) {
+        spend_warrants.push(0);
+    }
+    if let Some(soft) = soft_ceiling {
+        let first_at_soft = bounded_low.max(soft);
+        if first_at_soft <= bounded_high && hard_ceiling.is_none_or(|hard| first_at_soft < hard) {
+            spend_warrants.push(stage_index("cut budget"));
+        }
+    }
+    if let Some(hard) = hard_ceiling {
+        if bounded_high >= hard {
+            spend_warrants.push(stage_index("kill"));
+        }
+    }
+    let possible: Vec<usize> = spend_warrants
+        .iter()
+        .map(|warrant| missed_index.max(*warrant))
+        .collect();
+    if steps_down {
+        let lowest = possible.iter().min().copied().unwrap_or(missed_index);
+        if lowest >= previous_index {
+            return Err(corrupt(format!(
+                "a stage record in the log of run {id_repr} steps down from \
+                 {previous_stage} to {} where the triggers at its instant \
+                 warrant no stage below {previous_stage}",
+                record.stage
+            )));
+        }
+    } else if !possible.contains(&new_index) {
+        return Err(corrupt(format!(
+            "a stage record in the log of run {id_repr} stands at stage {}, \
+             a stage the triggers at its instant cannot warrant for this run",
+            record.stage
+        )));
+    }
+    Ok(())
+}
+
 fn validate_stored_ceiling(
     map: &std::collections::HashMap<&str, &Value>,
     field: &str,
@@ -1898,6 +2286,19 @@ fn validate_run(value: &Value) -> Result<Run> {
             "run {id_repr} does not open with its registration record"
         )));
     }
+    validate_history_against_standing(
+        &id_repr,
+        &log,
+        &stage,
+        spend_total,
+        &last_proof_at,
+        &clear_streak,
+        soft_ceiling,
+        hard_ceiling,
+        &proof_interval_seconds,
+        missed_proof_limit,
+        &registered_at,
+    )?;
     Ok(Run {
         id,
         registered_at,
