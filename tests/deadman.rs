@@ -1521,6 +1521,474 @@ fn damage_battery_text_shapes() {
     assert_corrupt_document(&third, b"this is not json");
 }
 
+/// Replace the reasons array at the given index among the
+/// reasons arrays of a document, counting from 0.
+fn set_reasons(text: &str, occurrence: usize, replacement: &str) -> String {
+    let mut from = 0;
+    for index in 0..=occurrence {
+        let start = text[from..]
+            .find("\"reasons\":")
+            .expect("the anchor stands")
+            + from;
+        let open = text[start..].find('[').expect("the array opens") + start;
+        let close = text[open..].find(']').expect("the array closes") + open;
+        if index == occurrence {
+            return format!("{}{}{}", &text[..open], replacement, &text[close + 1..]);
+        }
+        from = close + 1;
+    }
+    unreachable!()
+}
+
+fn replace_last(text: &str, needle: &str, replacement: &str) -> String {
+    let found = text.rfind(needle).expect("the anchor stands");
+    format!(
+        "{}{}{}",
+        &text[..found],
+        replacement,
+        &text[found + needle.len()..]
+    )
+}
+
+/// A cross validation damage pin. The damaged document is
+/// refused as corruption carrying the named disagreement on
+/// the log read, on the stage operation, and on a proof, and
+/// the state bytes stand unchanged afterwards.
+fn assert_xval_corrupt(dir: &TestDir, damaged: &str, needle: &str) {
+    std::fs::write(state_path(dir), damaged).unwrap();
+    let switch = make_switch(dir);
+    let err = switch.log(&text("run-a")).unwrap_err();
+    assert!(
+        matches!(err, Error::Corrupt(_)),
+        "expected a corrupt state error, got {err:?}"
+    );
+    assert!(
+        err.message().contains(needle),
+        "expected the refusal to name {needle:?}, got {:?}",
+        err.message()
+    );
+    assert_corrupt(switch.stage(&text("run-a"), &at(9)).map(|_| ()));
+    assert_corrupt(
+        switch
+            .prove(&text("run-a"), &text("working"), &at(9))
+            .map(|_| ()),
+    );
+    assert_eq!(state_bytes(dir), damaged.as_bytes());
+}
+
+fn base_killed_by_pull(dir: &TestDir) -> String {
+    let switch = make_switch(dir);
+    register(&switch, "run-a", &t0());
+    switch
+        .prove(&text("run-a"), &text("working"), &at(1))
+        .unwrap();
+    switch.pull(&text("run-a"), &at(2)).unwrap();
+    state_text(dir)
+}
+
+fn base_continued_killed(dir: &TestDir) -> String {
+    let switch = make_switch(dir);
+    register_full(&switch, "run-a", &t0(), 60, 5, None, Some(10));
+    switch.spend(&text("run-a"), &int(10), &at(1)).unwrap();
+    switch.stage(&text("run-a"), &at(2)).unwrap();
+    switch.spend(&text("run-a"), &int(500), &at(3)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("late proof"), &at(4))
+        .unwrap();
+    state_text(dir)
+}
+
+fn base_step_down(dir: &TestDir) -> String {
+    let switch = make_switch(dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(181)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(181))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(181)).unwrap();
+    switch.stage(&text("run-a"), &at(181)).unwrap();
+    state_text(dir)
+}
+
+fn base_warn(dir: &TestDir) -> String {
+    let switch = make_switch(dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(61)).unwrap();
+    state_text(dir)
+}
+
+fn base_mid_both_sides(dir: &TestDir) -> String {
+    let switch = make_switch(dir);
+    register_full(&switch, "run-a", &t0(), 60, 5, Some(100), Some(1000));
+    switch.spend(&text("run-a"), &int(40), &at(1)).unwrap();
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch.spend(&text("run-a"), &int(60), &at(122)).unwrap();
+    switch.stage(&text("run-a"), &at(123)).unwrap();
+    state_text(dir)
+}
+
+#[test]
+fn xval_standing_stage_disagrees_with_log_end() {
+    let base = TestDir::new("xval-standing-stage-base");
+    let valid = valid_document(&base);
+    let damaged = valid.replacen(
+        "\"stage\": \"cut budget\",\n      \"clear_streak\": 0,",
+        "\"stage\": \"throttle\",\n      \"clear_streak\": 0,",
+        1,
+    );
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-standing-stage");
+    assert_xval_corrupt(&dir, &damaged, "where its log ends at stage");
+}
+
+#[test]
+fn xval_proof_record_stage_disagrees_with_log() {
+    let base = TestDir::new("xval-proof-stage-base");
+    let valid = valid_document(&base);
+    let damaged = replace_nth(&valid, "\"stage\": \"none\"", "\"stage\": \"warn\"", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-proof-stage");
+    assert_xval_corrupt(&dir, &damaged, "not the stage");
+}
+
+#[test]
+fn xval_second_registered_record_refused() {
+    let base = TestDir::new("xval-second-registered-base");
+    let valid = valid_document(&base);
+    let damaged = valid.replacen("\"kind\": \"spend\"", "\"kind\": \"registered\"", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-second-registered");
+    assert_xval_corrupt(&dir, &damaged, "second registered record");
+}
+
+#[test]
+fn xval_stage_record_dropping_two_stages_refused() {
+    let base = TestDir::new("xval-drop-two-base");
+    let valid = base_step_down(&base);
+    let damaged = replace_nth(&valid, "\"stage\": \"throttle\"", "\"stage\": \"none\"", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-drop-two");
+    assert_xval_corrupt(&dir, &damaged, "a succession no evaluation writes");
+}
+
+#[test]
+fn xval_stage_record_after_kill_refused() {
+    let base = TestDir::new("xval-stage-after-kill-base");
+    let valid = base_continued_killed(&base);
+    let damaged = valid.replacen("\"kind\": \"proof\"", "\"kind\": \"stage\"", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-stage-after-kill");
+    assert_xval_corrupt(&dir, &damaged, "follows the kill record");
+}
+
+#[test]
+fn xval_pull_record_after_kill_refused() {
+    let base = TestDir::new("xval-pull-after-kill-base");
+    let valid = base_continued_killed(&base);
+    let damaged = valid.replacen("\"kind\": \"proof\"", "\"kind\": \"pull\"", 1);
+    let damaged = set_reasons(&damaged, 4, "[\"operator pull\"]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-pull-after-kill");
+    assert_xval_corrupt(&dir, &damaged, "follows the kill record");
+}
+
+#[test]
+fn xval_last_proof_instant_no_proof_record_carries() {
+    let base = TestDir::new("xval-last-proof-base");
+    let valid = valid_document(&base);
+    let damaged = valid.replacen(
+        "\"last_proof_at\": \"2031-05-04T12:00:01+00:00\"",
+        "\"last_proof_at\": \"2031-05-04T12:00:09+00:00\"",
+        1,
+    );
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-last-proof");
+    assert_xval_corrupt(
+        &dir,
+        &damaged,
+        "where its latest live proof record stands at",
+    );
+}
+
+#[test]
+fn xval_last_proof_unset_where_live_proof_stands() {
+    let base = TestDir::new("xval-last-proof-unset-base");
+    let valid = valid_document(&base);
+    let damaged = valid.replacen(
+        "\"last_proof_at\": \"2031-05-04T12:00:01+00:00\"",
+        "\"last_proof_at\": null",
+        1,
+    );
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-last-proof-unset");
+    assert_xval_corrupt(&dir, &damaged, "stands with no last proof");
+}
+
+#[test]
+fn xval_last_proof_standing_where_only_post_kill_proof_stands() {
+    let base = TestDir::new("xval-last-proof-postkill-base");
+    let valid = base_continued_killed(&base);
+    let damaged = valid.replacen(
+        "\"last_proof_at\": null",
+        "\"last_proof_at\": \"2031-05-04T12:00:04+00:00\"",
+        1,
+    );
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-last-proof-postkill");
+    assert_xval_corrupt(&dir, &damaged, "holds no live proof record");
+}
+
+#[test]
+fn xval_spend_total_without_live_spend_record() {
+    let base = TestDir::new("xval-spend-ghost-base");
+    let valid = base_warn(&base);
+    let damaged = valid.replacen("\"spend_total\": 0", "\"spend_total\": 40", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-spend-ghost");
+    assert_xval_corrupt(&dir, &damaged, "no live spend record");
+}
+
+#[test]
+fn xval_clear_streak_above_one_refused() {
+    let base = TestDir::new("xval-streak-two-base");
+    let valid = valid_document(&base);
+    let damaged = valid.replacen(
+        "\"clear_streak\": 0,\n      \"killed\": false",
+        "\"clear_streak\": 2,\n      \"killed\": false",
+        1,
+    );
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-streak-two");
+    assert_xval_corrupt(&dir, &damaged, "no standing clear streak stands above 1");
+}
+
+#[test]
+fn xval_clear_streak_nonzero_at_kill_refused() {
+    let base = TestDir::new("xval-streak-kill-base");
+    let valid = base_killed_by_pull(&base);
+    let damaged = valid.replacen(
+        "\"clear_streak\": 0,\n      \"killed\": true",
+        "\"clear_streak\": 1,\n      \"killed\": true",
+        1,
+    );
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-streak-kill");
+    assert_xval_corrupt(&dir, &damaged, "holds a clear streak of 0");
+}
+
+#[test]
+fn xval_stage_record_naming_operator_pull_refused() {
+    let base = TestDir::new("xval-op-pull-base");
+    let valid = valid_document(&base);
+    let damaged = valid.replacen("\"soft ceiling\"", "\"operator pull\"", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-op-pull");
+    assert_xval_corrupt(&dir, &damaged, "names operator pull");
+}
+
+#[test]
+fn xval_stage_record_reasons_out_of_order_refused() {
+    let base = TestDir::new("xval-reason-order-base");
+    let valid = base_mid_both_sides(&base);
+    let damaged = set_reasons(&valid, 4, "[\"missed proofs\", \"soft ceiling\"]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-reason-order");
+    assert_xval_corrupt(&dir, &damaged, "out of the order");
+}
+
+#[test]
+fn xval_stage_record_naming_missed_proofs_with_none_missed() {
+    let base = TestDir::new("xval-missed-named-base");
+    let valid = valid_document(&base);
+    let damaged = set_reasons(&valid, 3, "[\"soft ceiling\", \"missed proofs\"]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-missed-named");
+    assert_xval_corrupt(
+        &dir,
+        &damaged,
+        "names missed proofs where no whole proof interval",
+    );
+}
+
+#[test]
+fn xval_stage_record_missing_missed_proofs_where_missed_stand() {
+    let base = TestDir::new("xval-missed-missing-base");
+    let valid = base_mid_both_sides(&base);
+    let damaged = set_reasons(&valid, 2, "[]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-missed-missing");
+    assert_xval_corrupt(
+        &dir,
+        &damaged,
+        "names no missed proofs where the missed proof count",
+    );
+}
+
+#[test]
+fn xval_stage_record_naming_ceiling_spend_cannot_reach() {
+    let base = TestDir::new("xval-ceiling-unreached-base");
+    let valid = valid_document(&base);
+    let damaged = valid.replacen("\"soft ceiling\"", "\"hard ceiling\"", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-ceiling-unreached");
+    assert_xval_corrupt(&dir, &damaged, "cannot reach it");
+}
+
+#[test]
+fn xval_stage_record_missing_ceiling_spend_reaches() {
+    let base = TestDir::new("xval-ceiling-missing-base");
+    let valid = valid_document(&base);
+    let damaged = set_reasons(&valid, 3, "[]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-ceiling-missing");
+    assert_xval_corrupt(&dir, &damaged, "names no soft ceiling");
+}
+
+#[test]
+fn xval_stage_record_naming_ceiling_the_run_does_not_hold() {
+    let base = TestDir::new("xval-ceiling-unheld-base");
+    let valid = base_warn(&base);
+    let damaged = set_reasons(&valid, 1, "[\"soft ceiling\", \"missed proofs\"]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-ceiling-unheld");
+    assert_xval_corrupt(&dir, &damaged, "where the run holds no soft ceiling");
+}
+
+#[test]
+fn xval_stage_record_at_a_stage_no_trigger_warrants() {
+    let base = TestDir::new("xval-unwarranted-base");
+    let valid = base_warn(&base);
+    let damaged = replace_nth(&valid, "\"stage\": \"warn\"", "\"stage\": \"throttle\"", 1);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-unwarranted");
+    assert_xval_corrupt(&dir, &damaged, "cannot warrant for this run");
+}
+
+#[test]
+fn xval_step_down_record_where_no_warrant_falls_below() {
+    let base = TestDir::new("xval-step-down-warrant-base");
+    let valid = base_step_down(&base);
+    let damaged = replace_last(
+        &valid,
+        "\"at\": \"2031-05-04T12:03:01+00:00\"",
+        "\"at\": \"2031-05-04T12:08:01+00:00\"",
+    );
+    let damaged = set_reasons(&damaged, 3, "[\"missed proofs\"]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-step-down-warrant");
+    assert_xval_corrupt(&dir, &damaged, "warrant no stage below");
+}
+
+/// Boundary control. The stage record of the mid ladder base
+/// stands between live spend records on both sides, so the
+/// spend standing at it is a range the soft ceiling falls
+/// inside, and naming the soft ceiling there is a state the
+/// writers could have written with the whole spend standing
+/// before the record. It reads clean.
+#[test]
+fn xval_undetermined_ceiling_reason_reads_clean() {
+    let base = TestDir::new("xval-undetermined-base");
+    let valid = base_mid_both_sides(&base);
+    let varied = set_reasons(&valid, 2, "[\"soft ceiling\", \"missed proofs\"]");
+    assert_ne!(varied, valid);
+    let dir = TestDir::new("xval-undetermined");
+    std::fs::write(state_path(&dir), &varied).unwrap();
+    let switch = make_switch(&dir);
+    switch.log(&text("run-a")).expect("the log reads clean");
+    assert_eq!(state_bytes(&dir), varied.as_bytes());
+}
+
+/// Lifecycle control. Writer produced states read clean at
+/// every step of two lives, through a ceiling of zero, out of
+/// order proofs, a standing clear streak of one, step downs,
+/// a pull, and no operation records on a closed run.
+#[test]
+fn xval_lifecycle_states_read_clean_at_every_step() {
+    let dir = TestDir::new("xval-lifecycle");
+    let switch = make_switch(&dir);
+    let clean = |run_id: &str| {
+        switch
+            .log(&text(run_id))
+            .expect("a writer produced state reads clean");
+    };
+    register_full(&switch, "run-a", &t0(), 60, 5, Some(0), Some(100));
+    clean("run-a");
+    switch.stage(&text("run-a"), &at(0)).unwrap();
+    clean("run-a");
+    switch.spend(&text("run-a"), &int(0), &at(1)).unwrap();
+    clean("run-a");
+    switch.spend(&text("run-a"), &int(50), &at(2)).unwrap();
+    clean("run-a");
+    switch
+        .prove(&text("run-a"), &text("working"), &at(10))
+        .unwrap();
+    clean("run-a");
+    switch
+        .prove(&text("run-a"), &text("older"), &at(5))
+        .unwrap();
+    clean("run-a");
+    switch.stage(&text("run-a"), &at(10)).unwrap();
+    clean("run-a");
+    switch.pull(&text("run-a"), &at(11)).unwrap();
+    clean("run-a");
+    switch
+        .prove(&text("run-a"), &text("late"), &at(12))
+        .unwrap();
+    clean("run-a");
+    switch.spend(&text("run-a"), &int(10), &at(13)).unwrap();
+    clean("run-a");
+    register(&switch, "run-b", &t0());
+    clean("run-b");
+    switch.stage(&text("run-b"), &at(61)).unwrap();
+    clean("run-b");
+    switch.stage(&text("run-b"), &at(62)).unwrap();
+    clean("run-b");
+    switch
+        .prove(&text("run-b"), &text("working"), &at(62))
+        .unwrap();
+    clean("run-b");
+    switch.stage(&text("run-b"), &at(62)).unwrap();
+    clean("run-b");
+    let standing = state_text(&dir);
+    assert!(
+        standing.contains("\"clear_streak\": 1"),
+        "the lifecycle reaches a standing clear streak of one"
+    );
+    switch.stage(&text("run-b"), &at(62)).unwrap();
+    clean("run-b");
+    clean("run-a");
+}
+
+/// Fixture control. Every shipped fixture reads clean under
+/// the joined reader, and the empty fixture reads as an empty
+/// document whose runs stand not found.
+#[test]
+fn xval_shipped_fixtures_read_clean() {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let mut names: Vec<String> = std::fs::read_dir(&fixtures)
+        .expect("the fixtures folder stands")
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".json"))
+        .collect();
+    names.sort();
+    assert_eq!(names.len(), 10);
+    for name in names {
+        let dir = TestDir::new(&format!("xval-fixture-{name}"));
+        let raw = std::fs::read(fixtures.join(&name)).expect("the fixture reads");
+        std::fs::write(state_path(&dir), &raw).unwrap();
+        let switch = make_switch(&dir);
+        if name == "empty.json" {
+            assert_not_found(switch.log(&text("run-a")));
+        } else {
+            switch
+                .log(&text("run-a"))
+                .unwrap_or_else(|err| panic!("fixture {name} reads clean, got {err:?}"));
+        }
+        assert_eq!(state_bytes(&dir), raw);
+    }
+}
+
 /// The worker entry the race pins reenter this test binary
 /// through. With no mode in the environment it stands as a
 /// plain passing test and does nothing.
