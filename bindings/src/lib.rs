@@ -243,10 +243,10 @@ fn instant_argument(text: &str) -> PyResult<Instant> {
 
 /// Translate one decision record into a plain dictionary
 /// carrying every field the record stands in the state file
-/// with. The reserved model fields stand null in every record
-/// the library returns, because the reader refuses a record
-/// carrying a value in one of them, so they are carried here
-/// as None exactly as they stand in the file.
+/// with. The five model fields are carried exactly as they
+/// stand in the file, null in every record the deterministic
+/// operations write and populated on the stage record of a
+/// consultation under DM-17.
 fn record_dict(py: Python<'_>, record: &Record) -> PyResult<Py<PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("seq", record.seq)?;
@@ -254,9 +254,11 @@ fn record_dict(py: Python<'_>, record: &Record) -> PyResult<Py<PyDict>> {
     dict.set_item("at", &record.at)?;
     dict.set_item("stage", &record.stage)?;
     dict.set_item("reasons", &record.reasons)?;
-    dict.set_item("model_name", py.None())?;
-    dict.set_item("model_confidence", py.None())?;
-    dict.set_item("fallback_taken", py.None())?;
+    dict.set_item("model_name", &record.model_name)?;
+    dict.set_item("model_confidence", record.model_confidence)?;
+    dict.set_item("fallback_taken", &record.fallback_taken)?;
+    dict.set_item("model_verdict", &record.model_verdict)?;
+    dict.set_item("model_score", record.model_score)?;
     Ok(dict.unbind())
 }
 
@@ -289,6 +291,11 @@ fn register_dict(
         at: registered_at.clone(),
         stage: "none".to_string(),
         reasons: Vec::new(),
+        model_name: None,
+        model_verdict: None,
+        model_confidence: None,
+        model_score: None,
+        fallback_taken: None,
     };
     let dict = PyDict::new(py);
     dict.set_item("id", run)?;

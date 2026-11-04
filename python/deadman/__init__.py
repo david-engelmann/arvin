@@ -21,8 +21,10 @@ call returns the stage name and its reasons, the spend call
 returns the accumulated spend, the pull call returns the
 stage name, and the log call returns the decision records
 with every field they stand in the state file with, the
-reserved model fields among them, standing null in every
-record of this slice exactly as they stand in the file.
+five model fields among them, carried exactly as they stand
+in the file, null in every record the deterministic
+operations write and populated on the stage record of a
+consultation.
 """
 
 from ._deadman import (

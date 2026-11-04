@@ -72,13 +72,23 @@ def record(seq, kind, at, stage, reasons):
         "model_name": None,
         "model_confidence": None,
         "fallback_taken": None,
+        "model_verdict": None,
+        "model_score": None,
     }
 
 
 def stored_run(state):
     document = json.loads(Path(state).read_text())
     assert document["format"] == "deadman-state/1"
-    return document["runs"][0]
+    run = document["runs"][0]
+    # A record written before the escalation slice carries no
+    # model verdict or model score key in the file, and the
+    # binding carries both as None, so the stored side reads
+    # them as None for the comparisons below.
+    for entry in run["log"]:
+        entry.setdefault("model_verdict", None)
+        entry.setdefault("model_score", None)
+    return run
 
 
 def cli_binary():
@@ -459,3 +469,62 @@ def test_state_files_cross_between_the_binding_and_the_command_line(
     assert run_cli(other, "log", "run-b").splitlines() == [
         cli_line(entry) for entry in entries
     ]
+
+
+
+def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
+    state = str(tmp_path / "state.json")
+    document = {
+        "format": "deadman-state/1",
+        "runs": [
+            {
+                "id": "run-a",
+                "registered_at": T0,
+                "interval_seconds": 60,
+                "missed_limit": 5,
+                "soft_ceiling": None,
+                "hard_ceiling": None,
+                "spend_total": 0,
+                "last_proof_at": None,
+                "clear_streak": 0,
+                "stage": "warn",
+                "killed": False,
+                "log": [
+                    {
+                        "seq": 1,
+                        "kind": "registered",
+                        "at": T0,
+                        "stage": "none",
+                        "reasons": [],
+                        "model_name": None,
+                        "model_confidence": None,
+                        "fallback_taken": None,
+                    },
+                    {
+                        "seq": 2,
+                        "kind": "stage",
+                        "at": "2031-05-04T12:01:01+00:00",
+                        "stage": "warn",
+                        "reasons": ["missed proofs"],
+                        "model_name": "jev-1.13.0",
+                        "model_confidence": 0.5,
+                        "fallback_taken": None,
+                        "model_verdict": "hold",
+                        "model_score": 0.25,
+                    },
+                ],
+            }
+        ],
+    }
+    Path(state).write_text(json.dumps(document, indent=2) + "\n")
+    entries = deadman.log(state, "run-a")
+    expected = record(2, "stage", "2031-05-04T12:01:01+00:00", "warn", ["missed proofs"])
+    expected.update(
+        {
+            "model_name": "jev-1.13.0",
+            "model_confidence": 0.5,
+            "model_verdict": "hold",
+            "model_score": 0.25,
+        }
+    )
+    assert entries == [record(1, "registered", T0, "none", []), expected]
