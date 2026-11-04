@@ -1493,9 +1493,9 @@ pub fn validate_name(value: &Value) -> Result<()> {
     let ok = matches!(value, Value::Str(text) if name_shape_ok(text));
     if !ok {
         return Err(Error::InvalidName(format!(
-            "invalid run id {}, use one component of lowercase letters and digits \
-             and hyphens and underscores, starting and ending with a letter or a \
-             digit, at most {NAME_MAX} characters long",
+            "invalid run id {}, use one component of ASCII lowercase letters and \
+             ASCII digits and hyphens and underscores, starting and ending with an \
+             ASCII lowercase letter or an ASCII digit, at most {NAME_MAX} characters long",
             py_repr_value(value)
         )));
     }

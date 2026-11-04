@@ -238,9 +238,10 @@ def test_refusals_raise_with_the_library_messages(tmp_path):
     with pytest.raises(deadman.InvalidNameError) as invalid:
         deadman.register(state, "Not A Name", T0)
     assert str(invalid.value) == (
-        "invalid run id 'Not A Name', use one component of lowercase "
-        "letters and digits and hyphens and underscores, starting and "
-        "ending with a letter or a digit, at most 64 characters long"
+        "invalid run id 'Not A Name', use one component of ASCII "
+        "lowercase letters and ASCII digits and hyphens and "
+        "underscores, starting and ending with an ASCII lowercase "
+        "letter or an ASCII digit, at most 64 characters long"
     )
 
     with pytest.raises(deadman.InvalidRequestError) as naive:
