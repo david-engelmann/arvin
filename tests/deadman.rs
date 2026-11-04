@@ -1932,6 +1932,87 @@ fn xval_undetermined_ceiling_reason_reads_clean() {
     assert_eq!(state_bytes(&dir), varied.as_bytes());
 }
 
+/// Scale pin for the linearity the amendment states. The log
+/// stands in the adversarial arrangement for the spend range
+/// question, with 32000 stage records standing before 32000
+/// live spend records in one run, so a reader that rescans
+/// the live spend positions for every stage record pays for
+/// every pair. Every record is valid and the state reads
+/// clean. The bound is 12 seconds for the one joined read in
+/// a debug test build, set from measurements on both readers
+/// recorded in the gate report, where the reader that
+/// rescans per record took about 21 seconds on this
+/// arrangement and the repaired reader took about 7.
+#[test]
+fn xval_many_stage_records_before_many_live_spends_read_clean_in_linear_time() {
+    let stage_records = 32_000usize;
+    let spend_records = 32_000usize;
+    let mut document = String::with_capacity((stage_records + spend_records) * 320);
+    document.push_str(
+        "{\n  \"format\": \"deadman-state/1\",\n  \"runs\": [\n    {\n      \
+         \"id\": \"run-a\",\n      \
+         \"registered_at\": \"2031-05-04T12:00:00+00:00\",\n      \
+         \"proof_interval_seconds\": 60,\n      \"missed_proof_limit\": 5,\n      \
+         \"soft_ceiling\": null,\n      \"hard_ceiling\": null,\n      \
+         \"spend_total\": 0,\n      \"last_proof_at\": null,\n      \
+         \"stage\": \"warn\",\n      \"clear_streak\": 0,\n      \
+         \"killed\": false,\n      \"log\": [\n",
+    );
+    let mut seq = 0usize;
+    let mut push_record =
+        |document: &mut String, kind: &str, at: &str, stage: &str, reasons: &str| {
+            seq += 1;
+            document.push_str(&format!(
+                "        {{\n          \"seq\": {seq},\n          \
+             \"kind\": \"{kind}\",\n          \"at\": \"{at}\",\n          \
+             \"stage\": \"{stage}\",\n          \"reasons\": {reasons},\n          \
+             \"model_name\": null,\n          \"model_confidence\": null,\n          \
+             \"fallback_taken\": null\n        }},\n"
+            ));
+        };
+    push_record(
+        &mut document,
+        "registered",
+        "2031-05-04T12:00:00+00:00",
+        "none",
+        "[]",
+    );
+    for _ in 0..stage_records {
+        push_record(
+            &mut document,
+            "stage",
+            "2031-05-04T12:01:01+00:00",
+            "warn",
+            "[\"missed proofs\"]",
+        );
+    }
+    for _ in 0..spend_records {
+        push_record(
+            &mut document,
+            "spend",
+            "2031-05-04T12:00:00+00:00",
+            "warn",
+            "[]",
+        );
+    }
+    let last_comma = document.rfind("},\n").expect("the records stand");
+    document.replace_range(last_comma..last_comma + 2, "}\n");
+    document.push_str("      ]\n    }\n  ]\n}\n");
+    let dir = TestDir::new("xval-scale");
+    std::fs::write(state_path(&dir), &document).unwrap();
+    let switch = make_switch(&dir);
+    let started = std::time::Instant::now();
+    let records = switch.log(&text("run-a")).expect("the log reads clean");
+    let elapsed = started.elapsed();
+    assert_eq!(records.len(), stage_records + spend_records + 1);
+    assert!(
+        elapsed < std::time::Duration::from_secs(12),
+        "the joined read took {elapsed:?}, over the 12 second bound the \
+         linear reader meets and the per record rescan exceeds"
+    );
+    assert_eq!(state_bytes(&dir), document.as_bytes());
+}
+
 /// Lifecycle control. Writer produced states read clean at
 /// every step of two lives, through a ceiling of zero, out of
 /// order proofs, a standing clear streak of one, step downs,

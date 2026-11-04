@@ -1815,14 +1815,29 @@ fn validate_history_against_standing(
     missed_proof_limit: i64,
     registered_at: &str,
 ) -> Result<()> {
-    let first_kill = log.iter().position(|record| record.stage == "kill");
+    // One preparatory scan fixes the first record at kill and
+    // the first and last live spend positions. A record stands
+    // live while it stands before the first record at kill, so
+    // a spend counts towards the bounds only where no earlier
+    // record stands at kill and the record itself does not.
+    // Live spend positions stand in log order, so the first is
+    // the smallest and the last is the largest, and those two
+    // alone decide whether any live spend stands before or
+    // after any position the replay later judges.
+    let mut first_kill: Option<usize> = None;
+    let mut live_spend_bounds: (Option<usize>, Option<usize>) = (None, None);
+    for (position, record) in log.iter().enumerate() {
+        if first_kill.is_none() && record.stage == "kill" {
+            first_kill = Some(position);
+        }
+        if record.kind == "spend" && first_kill.is_none_or(|kill| position < kill) {
+            if live_spend_bounds.0.is_none() {
+                live_spend_bounds.0 = Some(position);
+            }
+            live_spend_bounds.1 = Some(position);
+        }
+    }
     let is_live = |position: usize| first_kill.is_none_or(|kill| position < kill);
-    let live_spends: Vec<usize> = log
-        .iter()
-        .enumerate()
-        .filter(|(position, record)| record.kind == "spend" && is_live(*position))
-        .map(|(position, _)| position)
-        .collect();
     let registered_instant = parse_instant(registered_at).expect("a validated instant parses");
     let mut live_proof_latest: Option<Instant> = None;
     let mut live_proof_latest_text: Option<String> = None;
@@ -1871,7 +1886,7 @@ fn validate_history_against_standing(
                     &previous.stage,
                     &live_proof_latest,
                     &registered_instant,
-                    &live_spends,
+                    live_spend_bounds,
                     position,
                     spend_total,
                     soft_ceiling,
@@ -1922,7 +1937,7 @@ fn validate_history_against_standing(
             (None, None) => unreachable!("equal instants reach no refusal"),
         });
     }
-    if live_spends.is_empty() && spend_total != 0 {
+    if live_spend_bounds.0.is_none() && spend_total != 0 {
         return Err(corrupt(format!(
             "run {id_repr} stands with spend total {spend_total} but its log \
              holds no live spend record"
@@ -1959,7 +1974,7 @@ fn validate_stage_record_against_warrant(
     previous_stage: &str,
     live_proof_latest: &Option<Instant>,
     registered_instant: &Instant,
-    live_spends: &[usize],
+    live_spend_bounds: (Option<usize>, Option<usize>),
     position: usize,
     spend_total: i64,
     soft_ceiling: Option<i64>,
@@ -2020,15 +2035,22 @@ fn validate_stage_record_against_warrant(
              at {missed}"
         )));
     }
-    let (spend_low, spend_high) = if live_spends.is_empty() {
-        (0, 0)
-    } else {
-        let before = live_spends.iter().any(|spend| *spend < position);
-        let after = live_spends.iter().any(|spend| *spend > position);
-        (
-            if after { 0 } else { spend_total },
-            if before { spend_total } else { 0 },
-        )
+    let (spend_low, spend_high) = match live_spend_bounds {
+        (None, None) => (0, 0),
+        (Some(first), Some(last)) => {
+            // The bounds stand in log order, so a live spend
+            // stands before this record exactly where the first
+            // one does and after it exactly where the last one
+            // does. A spend at the record position itself counts
+            // on neither side, as the strict comparisons state.
+            let before = first < position;
+            let after = last > position;
+            (
+                if after { 0 } else { spend_total },
+                if before { spend_total } else { 0 },
+            )
+        }
+        _ => unreachable!("the preparatory scan sets both bounds or neither"),
     };
     for (which, ceiling) in [("hard", hard_ceiling), ("soft", soft_ceiling)] {
         let name = format!("{which} ceiling");
