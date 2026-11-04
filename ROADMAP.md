@@ -1,6 +1,6 @@
 # Deadman roadmap
 
-Deadman is the staged kill switch. It watches a running agent system and walks it down through the stages warn and throttle and cut tools and cut budget and kill as the evidence of a runaway grows. Those stage names are vocabulary other repos in the program cite, and they do not change. Deadman has not started its rounds yet. The deterministic stage machinery is built and proven first, and the decision model section below is recorded now so the escalation design states, before any code exists, exactly which decisions judgment may touch and which it may never touch.
+Deadman is the staged kill switch. It watches a running agent system and walks it down through the stages warn and throttle and cut tools and cut budget and kill as the evidence of a runaway grows. Those stage names are vocabulary other repos in the program cite, and they do not change. Deadman has closed Round 1 and Round 2 of its perfection rounds. The deterministic stage machinery is built and proven first, and the decision model section below is recorded now so the escalation design states, before any code exists, exactly which decisions judgment may touch and which it may never touch.
 
 ## Decision models
 
