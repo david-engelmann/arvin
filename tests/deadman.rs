@@ -15,8 +15,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use deadman::{
-    format_instant, parse_instant, Error, Instant, Record, Switch, Value, FORMAT_NAME, STAGES,
-    TRIGGERS,
+    format_instant, parse_instant, Consultation, Error, FixtureTransport, Instant, ModelTransport,
+    Record, SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR,
+    FORMAT_NAME, MODEL_NAME, STAGES, TRIGGERS,
 };
 
 fn t0() -> Instant {
@@ -2379,4 +2380,926 @@ fn cli_addresses_a_state_path_that_is_not_utf8() {
     assert!(state.exists());
     let document = std::fs::read_to_string(&state).unwrap();
     assert!(document.contains("\"format\": \"deadman-state/1\""));
+}
+
+// ----------------------------------------------------------------
+// The escalation slice pins of Round 3, obligations DM-13 to
+// DM-20. Every consultation runs through a fixture transport or
+// a scripted fake helper, and no test performs a network call
+// or spawns the real helper.
+
+fn verdict(verdict: Verdict, confidence: f64, score: f64) -> Consultation {
+    Consultation::Verdict {
+        model_name: MODEL_NAME.to_string(),
+        verdict,
+        confidence,
+        score,
+    }
+}
+
+fn fixture_transport(replies: Vec<Consultation>) -> FixtureTransport {
+    FixtureTransport::new(MODEL_NAME, replies)
+}
+
+/// A run standing at warn with the held seat open, raised by
+/// one missed proof at 61 seconds and evaluated again at the
+/// same instant, where the warrant stands at the stage.
+fn switch_at_warn(dir: &TestDir) -> Switch {
+    let switch = make_switch(dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(61)).unwrap();
+    switch
+}
+
+/// A run standing at throttle with the fall count at 1 and the
+/// fall seat armed, a rise at 121 seconds, a proof at 121, and
+/// one clean evaluation at 122.
+fn switch_at_throttle_fall_seat(dir: &TestDir) -> Switch {
+    let switch = make_switch(dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(121))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(122)).unwrap();
+    switch
+}
+
+fn last_record(switch: &Switch) -> Record {
+    switch
+        .log(&text("run-a"))
+        .unwrap()
+        .pop()
+        .expect("a record stands")
+}
+
+#[test]
+fn model_bars_stand_as_named_constants() {
+    assert_eq!(ESCALATION_BAR, 0.60);
+    assert_eq!(DE_ESCALATION_BAR, 0.85);
+    assert!(DE_ESCALATION_BAR > ESCALATION_BAR);
+    assert_eq!(MODEL_NAME, "jev-1.13.0");
+}
+
+#[test]
+fn held_seat_escalate_at_the_bar_rises_one_step() {
+    let dir = TestDir::new("model-held-escalate-at-bar");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.60, 0.5)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert_eq!(transport.shown().len(), 1);
+    let record = last_record(&switch);
+    assert_eq!(record.kind, "stage");
+    assert_eq!(record.stage, "throttle");
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    assert_eq!(record.model_verdict.as_deref(), Some("escalate"));
+    assert_eq!(record.model_confidence, Some(0.60));
+    assert_eq!(record.model_score, Some(0.5));
+    assert_eq!(record.fallback_taken, None);
+    let document = state_text(&dir);
+    assert!(document.contains("\"model_verdict\": \"escalate\""));
+    assert!(document.contains("\"model_score\": 0.5"));
+}
+
+#[test]
+fn held_seat_escalate_below_the_bar_holds_and_records_the_verdict() {
+    let dir = TestDir::new("model-held-escalate-below-bar");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.59, 0.5)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.stage, "warn");
+    assert_eq!(record.model_verdict.as_deref(), Some("escalate"));
+    assert_eq!(record.model_confidence, Some(0.59));
+    // A verdict under its bar is no fallback class, and the
+    // record says so, so the log distinguishes a model that
+    // answered and was refused from one that never answered.
+    assert_eq!(record.fallback_taken, None);
+}
+
+#[test]
+fn held_seat_de_escalate_at_full_confidence_holds() {
+    let dir = TestDir::new("model-held-de-escalate");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.99, 0.1)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.model_verdict.as_deref(), Some("de-escalate"));
+    assert_eq!(record.model_confidence, Some(0.99));
+    assert_eq!(record.fallback_taken, None);
+}
+
+#[test]
+fn held_seat_hold_verdict_holds() {
+    let dir = TestDir::new("model-held-hold");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.4)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.model_verdict.as_deref(), Some("hold"));
+    assert_eq!(record.model_score, Some(0.4));
+}
+
+#[test]
+fn fall_seat_de_escalate_at_the_bar_steps_down() {
+    let dir = TestDir::new("model-fall-at-bar");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.85, 0.2)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.stage, "warn");
+    assert_eq!(record.model_verdict.as_deref(), Some("de-escalate"));
+    assert_eq!(record.model_confidence, Some(0.85));
+    assert!(state_text(&dir).contains("\"clear_streak\": 0"));
+}
+
+#[test]
+fn fall_seat_de_escalate_below_the_bar_holds_and_spends_the_streak() {
+    let dir = TestDir::new("model-fall-below-bar");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let before = switch.log(&text("run-a")).unwrap().len();
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.84, 0.2)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    // The unendorsed completion appends its hold record and
+    // spends the streak, so the fall must be re-earned.
+    assert_eq!(switch.log(&text("run-a")).unwrap().len(), before + 1);
+    let record = last_record(&switch);
+    assert_eq!(record.stage, "throttle");
+    assert_eq!(record.model_verdict.as_deref(), Some("de-escalate"));
+    assert!(state_text(&dir).contains("\"clear_streak\": 0"));
+    let report = switch.stage(&text("run-a"), &at(124)).unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert!(state_text(&dir).contains("\"clear_streak\": 1"));
+}
+
+#[test]
+fn fall_seat_fallback_spends_the_streak_and_a_fall_re_earns() {
+    let dir = TestDir::new("model-fall-fallback-spend");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let transport = fixture_transport(vec![
+        Consultation::Silence,
+        verdict(Verdict::DeEscalate, 0.90, 0.2),
+    ]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    let record = last_record(&switch);
+    assert_eq!(record.fallback_taken.as_deref(), Some("silence"));
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    assert_eq!(record.model_verdict, None);
+    assert_eq!(record.model_confidence, None);
+    assert_eq!(record.model_score, None);
+    assert!(state_text(&dir).contains("\"clear_streak\": 0"));
+    // The next clean evaluation consults nothing, because the
+    // streak was spent and the seat stands only at a streak
+    // of 1, and it re-earns the count.
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(124), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert_eq!(transport.shown().len(), 1);
+    assert!(state_text(&dir).contains("\"clear_streak\": 1"));
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(125), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    assert_eq!(transport.shown().len(), 2);
+}
+
+#[test]
+fn abstention_holds_at_both_seats_and_at_cut_tools() {
+    // The held seat at warn.
+    let dir = TestDir::new("model-abstain-warn");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![Consultation::Abstention {
+        model_name: MODEL_NAME.to_string(),
+    }]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    assert_eq!(
+        last_record(&switch).fallback_taken.as_deref(),
+        Some("abstention")
+    );
+    // The fall seat at throttle spends the streak.
+    let dir = TestDir::new("model-abstain-throttle");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let transport = fixture_transport(vec![Consultation::Abstention {
+        model_name: MODEL_NAME.to_string(),
+    }]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert_eq!(
+        last_record(&switch).fallback_taken.as_deref(),
+        Some("abstention")
+    );
+    assert!(state_text(&dir).contains("\"clear_streak\": 0"));
+    // The held seat at cut tools.
+    let dir = TestDir::new("model-abstain-cut-tools");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(181)).unwrap();
+    let transport = fixture_transport(vec![Consultation::Abstention {
+        model_name: MODEL_NAME.to_string(),
+    }]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(181), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "cut tools");
+    assert_eq!(
+        last_record(&switch).fallback_taken.as_deref(),
+        Some("abstention")
+    );
+}
+
+#[test]
+fn call_failure_records_its_class_at_the_held_seat() {
+    let dir = TestDir::new("model-call-failed");
+    let switch = switch_at_warn(&dir);
+    // An empty fixture transport answers call failed, the
+    // class a script that has run out has honestly earned.
+    let transport = fixture_transport(vec![]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.fallback_taken.as_deref(), Some("call failed"));
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+}
+
+#[test]
+fn model_escalation_from_cut_tools_lands_at_cut_budget_and_never_kill() {
+    let dir = TestDir::new("model-escalate-cut-tools");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(181)).unwrap();
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 1.00, 0.9)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(181), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "cut budget");
+    assert!(state_text(&dir).contains("\"killed\": false"));
+    let report = switch.stage(&text("run-a"), &at(182)).unwrap();
+    assert_eq!(report.stage, "cut budget");
+}
+
+#[test]
+fn consultations_stand_only_at_the_seats() {
+    let dir = TestDir::new("model-seats-only");
+    let switch = make_switch(&dir);
+    let transport = fixture_transport(vec![
+        verdict(Verdict::Hold, 0.9, 0.5),
+        verdict(Verdict::Hold, 0.9, 0.5),
+        verdict(Verdict::Hold, 0.9, 0.5),
+        verdict(Verdict::Hold, 0.9, 0.5),
+    ]);
+    register(&switch, "run-a", &t0());
+    // A rise evaluation consults nothing.
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(transport.shown().len(), 0);
+    // A quiet evaluation at none consults nothing.
+    register(&switch, "run-b", &t0());
+    switch
+        .stage_with_model(&text("run-b"), &at(10), Some(&transport), None)
+        .unwrap();
+    assert_eq!(transport.shown().len(), 0);
+    // A clean evaluation at a streak of 0 consults nothing,
+    // because the fall seat stands only at a streak of 1.
+    switch
+        .prove(&text("run-a"), &text("working"), &at(61))
+        .unwrap();
+    switch
+        .stage_with_model(&text("run-a"), &at(62), Some(&transport), None)
+        .unwrap();
+    assert_eq!(transport.shown().len(), 0);
+    // The fall seat armed consults exactly once.
+    switch
+        .stage_with_model(&text("run-a"), &at(63), Some(&transport), None)
+        .unwrap();
+    assert_eq!(transport.shown().len(), 1);
+    // Cut budget stands outside the middle stages, at its
+    // rise and at its hold alike.
+    register_full(&switch, "run-c", &t0(), 60, 5, Some(100), None);
+    switch.spend(&text("run-c"), &int(100), &at(1)).unwrap();
+    switch
+        .stage_with_model(&text("run-c"), &at(2), Some(&transport), None)
+        .unwrap();
+    switch
+        .stage_with_model(&text("run-c"), &at(3), Some(&transport), None)
+        .unwrap();
+    assert_eq!(transport.shown().len(), 1);
+    // A kill evaluation and a closed run consult nothing.
+    register_full(&switch, "run-d", &t0(), 60, 5, None, Some(10));
+    switch.spend(&text("run-d"), &int(10), &at(1)).unwrap();
+    switch
+        .stage_with_model(&text("run-d"), &at(2), Some(&transport), None)
+        .unwrap();
+    switch.pull(&text("run-d"), &at(3)).unwrap();
+    switch
+        .stage_with_model(&text("run-d"), &at(4), Some(&transport), None)
+        .unwrap();
+    assert_eq!(transport.shown().len(), 1);
+    assert_eq!(transport.remaining(), 3);
+}
+
+#[test]
+fn stale_evaluations_earn_no_fall_credit() {
+    let dir = TestDir::new("model-stale-no-credit");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(121))
+        .unwrap();
+    // Two clean evaluations stamped before the reference
+    // instant of 121 advance nothing and append nothing.
+    for stale in [100, 110] {
+        let report = switch.stage(&text("run-a"), &at(stale)).unwrap();
+        assert_eq!(report.stage, "throttle");
+        assert_eq!(switch.log(&text("run-a")).unwrap().len(), 3);
+        assert!(state_text(&dir).contains("\"clear_streak\": 0"));
+    }
+    // A fresh pair after them steps the stage down, the first
+    // advancing the count and the second completing it.
+    switch.stage(&text("run-a"), &at(122)).unwrap();
+    assert!(state_text(&dir).contains("\"clear_streak\": 1"));
+    let report = switch.stage(&text("run-a"), &at(123)).unwrap();
+    assert_eq!(report.stage, "warn");
+}
+
+#[test]
+fn a_stale_evaluation_neither_completes_nor_resets_the_streak() {
+    let dir = TestDir::new("model-stale-no-complete");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(121))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(122)).unwrap();
+    assert!(state_text(&dir).contains("\"clear_streak\": 1"));
+    // A stale clean evaluation leaves the honestly earned
+    // count standing, neither completing the fall nor
+    // destroying the progress toward it.
+    let report = switch.stage(&text("run-a"), &at(100)).unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert!(state_text(&dir).contains("\"clear_streak\": 1"));
+    let report = switch.stage(&text("run-a"), &at(123)).unwrap();
+    assert_eq!(report.stage, "warn");
+}
+
+#[test]
+fn a_stale_evaluation_applies_its_rises() {
+    let dir = TestDir::new("model-stale-rise");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 60, 5, Some(100), None);
+    switch.stage(&text("run-a"), &at(61)).unwrap();
+    switch.spend(&text("run-a"), &int(100), &at(62)).unwrap();
+    // The evaluation stamped at 50 seconds stands before the
+    // reference instant of 61, and the spend warrant it
+    // computes is instant independent, so the rise applies
+    // and its record appends stamped as it stands.
+    let report = switch.stage(&text("run-a"), &at(50)).unwrap();
+    assert_eq!(report.stage, "cut budget");
+    let record = last_record(&switch);
+    assert_eq!(record.kind, "stage");
+    assert_eq!(record.stage, "cut budget");
+    assert_eq!(record.at, "2031-05-04T12:00:50+00:00");
+    assert_eq!(record.reasons, ["soft ceiling"]);
+}
+
+const EXPECTED_PREAMBLE: &str = "You are judging one evaluation of a staged kill switch for an agent run. The switch stands at one stage of a ladder, none and warn and throttle and cut tools and cut budget and kill, and it moves a run up the ladder to protect the systems around it and down the ladder as danger passes. Deterministic rules own the spend ceilings and the kill and the first move into warn, and none of that is before you. You judge only a run standing at warn or throttle or cut tools, and you answer with one verdict among hold and escalate and de-escalate, with a confidence, and with a score for how likely the run is to be running away.\n\nThe fall rules of the switch bind your verdict. A stage falls only after two consecutive clean evaluations, never after one, however clean the one looks. A stage entered for structural reasons, a planned spend profile that is proceeding to plan among them, is not relaxed because the current picture is tidy. Recommend de-escalate only where the signals that raised the stage have actually cleared and the fall has two consecutive clean evaluations behind it, because where fewer stand, hold is the truthful verdict even when nothing currently looks wrong. Recommend escalate only where the run should stand one stage higher than it stands, never more, because an escalation takes effect one step at a time. Where the evidence cuts both ways, hold. Where you cannot judge the picture before you, abstain rather than guess.";
+
+#[test]
+fn the_vignette_stands_byte_for_byte_at_the_held_seat() {
+    let dir = TestDir::new("model-vignette-held");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    let shown = transport.shown();
+    assert_eq!(shown.len(), 1);
+    let expected = format!(
+        "{EXPECTED_PREAMBLE}\n\nThe state of the run at this evaluation stands as follows.\n{}",
+        [
+            "The run stands at stage warn.",
+            "The triggers at this instant warrant stage warn.",
+            "The live reasons are missed proofs.",
+            "The missed proof count stands at 1 and the missed proof limit stands at 5 and the proof interval stands at 60 seconds.",
+            "No proof stands, and the registration stands at an age of 61 whole seconds.",
+            "The accumulated spend stands at 0.",
+            "No soft ceiling stands.",
+            "No hard ceiling stands.",
+            "The standing clear streak stands at 0.",
+            "The last stage records in sequence order stand as follows.",
+            "A stage record at stage warn naming missed proofs stands at an age of 0 whole seconds.",
+            "Since the run entered stage warn it has recorded 0 proof records and 0 spend records.",
+            "No proof note stands recorded in the decision log.",
+        ]
+        .join("\n")
+    );
+    assert_eq!(shown[0], expected);
+    // The run id and the confidence bars never cross.
+    assert!(!shown[0].contains("run-a"));
+    assert!(!shown[0].contains("0.60"));
+    assert!(!shown[0].contains("0.85"));
+}
+
+#[test]
+fn the_vignette_at_the_fall_seat_with_a_host_context() {
+    let dir = TestDir::new("model-vignette-fall");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 60, 5, Some(1000), None);
+    switch.spend(&text("run-a"), &int(40), &at(5)).unwrap();
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(121))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(122)).unwrap();
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    let context = "Planned build window, spend is structural.";
+    switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), Some(context))
+        .unwrap();
+    let shown = transport.shown();
+    assert_eq!(shown.len(), 1);
+    let expected = format!(
+        "{EXPECTED_PREAMBLE}\n\nThe state of the run at this evaluation stands as follows.\n{}\n\nHost supplied context follows. It is marked as host supplied and it is recorded nowhere.\n{context}",
+        [
+            "The run stands at stage throttle.",
+            "The triggers at this instant warrant stage none.",
+            "No trigger stands live at this instant.",
+            "The missed proof count stands at 0 and the missed proof limit stands at 5 and the proof interval stands at 60 seconds.",
+            "The last proof stands at an age of 2 whole seconds.",
+            "The accumulated spend stands at 40.",
+            "The soft ceiling stands at 1000 and the spend stands below it by 960.",
+            "No hard ceiling stands.",
+            "The standing clear streak stands at 1.",
+            "The last stage records in sequence order stand as follows.",
+            "A stage record at stage throttle naming missed proofs stands at an age of 2 whole seconds.",
+            "Since the run entered stage throttle it has recorded 1 proof record and 0 spend records.",
+            "No proof note stands recorded in the decision log.",
+        ]
+        .join("\n")
+    );
+    assert_eq!(shown[0], expected);
+    // The context is never written into the state document.
+    assert!(!state_text(&dir).contains("Planned build window"));
+}
+
+#[test]
+fn host_context_refusals_change_nothing() {
+    let dir = TestDir::new("model-context-refusals");
+    let switch = switch_at_warn(&dir);
+    let before = state_bytes(&dir);
+    // A context with no transport to carry it.
+    assert_invalid_request(switch.stage_with_model(
+        &text("run-a"),
+        &at(61),
+        None,
+        Some("context"),
+    ));
+    assert_eq!(state_bytes(&dir), before);
+    // A context past the bound of 2000 characters.
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    let long = "x".repeat(2001);
+    assert_invalid_request(switch.stage_with_model(
+        &text("run-a"),
+        &at(61),
+        Some(&transport),
+        Some(&long),
+    ));
+    assert_eq!(transport.shown().len(), 0);
+    assert_eq!(state_bytes(&dir), before);
+    // A context at the bound is carried.
+    let exact = "x".repeat(2000);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), Some(&exact))
+        .unwrap();
+    assert_eq!(transport.shown().len(), 1);
+    assert!(transport.shown()[0].ends_with(&exact));
+}
+
+#[test]
+fn a_transport_pinned_outside_the_recordable_shape_is_refused() {
+    let dir = TestDir::new("model-pinned-shape");
+    let switch = switch_at_warn(&dir);
+    let before = state_bytes(&dir);
+    let empty = FixtureTransport::new("", vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    assert_invalid_request(switch.stage_with_model(
+        &text("run-a"),
+        &at(61),
+        Some(&empty),
+        None,
+    ));
+    let wide = FixtureTransport::new(&"x".repeat(129), vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    assert_invalid_request(switch.stage_with_model(
+        &text("run-a"),
+        &at(61),
+        Some(&wide),
+        None,
+    ));
+    assert_eq!(state_bytes(&dir), before);
+}
+
+#[test]
+fn an_out_of_shape_verdict_lands_as_a_malformed_reply() {
+    // A confidence past the unit interval.
+    let dir = TestDir::new("model-verdict-shape-confidence");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 1.5, 0.5)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.fallback_taken.as_deref(), Some("malformed reply"));
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    // A score that is not a number in the interval.
+    let dir = TestDir::new("model-verdict-shape-score");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.9, f64::NAN)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(
+        last_record(&switch).fallback_taken.as_deref(),
+        Some("malformed reply")
+    );
+}
+
+#[test]
+fn model_evaluation_is_deterministic_on_the_same_state_and_reply() {
+    let dir = TestDir::new("model-deterministic");
+    let first = Switch::new(dir.path().join("first.json"));
+    let second = Switch::new(dir.path().join("second.json"));
+    for switch in [&first, &second] {
+        register(switch, "run-a", &t0());
+        switch.stage(&text("run-a"), &at(61)).unwrap();
+    }
+    let first_transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.9, 0.5)]);
+    let second_transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.9, 0.5)]);
+    let report_first = first
+        .stage_with_model(&text("run-a"), &at(61), Some(&first_transport), None)
+        .unwrap();
+    let report_second = second
+        .stage_with_model(&text("run-a"), &at(61), Some(&second_transport), None)
+        .unwrap();
+    assert_eq!(report_first, report_second);
+    assert_eq!(
+        std::fs::read(dir.path().join("first.json")).unwrap(),
+        std::fs::read(dir.path().join("second.json")).unwrap()
+    );
+}
+
+#[test]
+fn no_transport_model_evaluation_matches_the_stage_operation_byte_for_byte() {
+    let dir = TestDir::new("model-no-transport-equivalence");
+    let plain = Switch::new(dir.path().join("plain.json"));
+    let model = Switch::new(dir.path().join("model.json"));
+    for switch in [&plain, &model] {
+        register_full(switch, "run-a", &t0(), 60, 5, Some(100), Some(1000));
+        switch.spend(&text("run-a"), &int(40), &at(1)).unwrap();
+    }
+    // One scripted life driven through both entry points,
+    // rises and holds and a stale evaluation and a fall and
+    // a ceiling rise among the steps.
+    for instant in [121, 122, 100, 123, 125, 126] {
+        let plain_report = plain.stage(&text("run-a"), &at(instant)).unwrap();
+        let model_report = model
+            .stage_with_model(&text("run-a"), &at(instant), None, None)
+            .unwrap();
+        assert_eq!(plain_report, model_report, "at {instant}");
+        if instant == 121 {
+            for switch in [&plain, &model] {
+                switch
+                    .prove(&text("run-a"), &text("working"), &at(121))
+                    .unwrap();
+            }
+        }
+        if instant == 123 {
+            for switch in [&plain, &model] {
+                switch.spend(&text("run-a"), &int(60), &at(124)).unwrap();
+            }
+        }
+    }
+    assert_eq!(
+        std::fs::read(dir.path().join("plain.json")).unwrap(),
+        std::fs::read(dir.path().join("model.json")).unwrap()
+    );
+}
+
+/// Write a state text into a fresh directory and read its log,
+/// expecting the corruption refusal, with the bytes standing
+/// unchanged after the refused read.
+fn assert_corrupt_state_text(text: &str) {
+    let dir = TestDir::new("model-damage");
+    std::fs::write(state_path(&dir), text).expect("the damaged state is written");
+    let switch = make_switch(&dir);
+    assert_corrupt(switch.log(&text("run-a")));
+    assert_eq!(state_text(&dir), text);
+}
+
+/// Split a state text at the first record of a kind, so a
+/// damage lands on that record and no other.
+fn split_at_kind(text: &str, kind: &str) -> (String, String) {
+    let needle = format!("\"kind\": \"{kind}\"");
+    let position = text.find(&needle).expect("the record kind stands");
+    (
+        text[..position].to_string(),
+        text[position..].to_string(),
+    )
+}
+
+/// Split a state text at the last record of a kind.
+fn split_at_last_kind(text: &str, kind: &str) -> (String, String) {
+    let needle = format!("\"kind\": \"{kind}\"");
+    let position = text.rfind(&needle).expect("the record kind stands");
+    (
+        text[..position].to_string(),
+        text[position..].to_string(),
+    )
+}
+
+#[test]
+fn a_step_down_record_stands_under_the_floor_of_dm19() {
+    let dir = TestDir::new("model-floor-damage");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(121))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(122)).unwrap();
+    switch.stage(&text("run-a"), &at(123)).unwrap();
+    let valid = state_text(&dir);
+    assert!(valid.contains("\"at\": \"2031-05-04T12:02:03+00:00\""));
+    // The step down restamped below the reference instant its
+    // preceding records establish, the proof and the rise at
+    // 121 seconds, is refused by the join.
+    let damaged = valid.replace(
+        "\"at\": \"2031-05-04T12:02:03+00:00\"",
+        "\"at\": \"2031-05-04T12:00:30+00:00\"",
+    );
+    assert_corrupt_state_text(&damaged);
+}
+
+#[test]
+fn model_record_damage_battery() {
+    // A verdict pattern standing in the file, written by a
+    // consultation at the held seat.
+    let dir = TestDir::new("model-damage-base");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.99, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    let verdict_state = state_text(&dir);
+    // A verdict pattern missing its score stands in no
+    // recorded pattern.
+    assert_corrupt_state_text(&verdict_state.replace(
+        "\"model_score\": 0.5",
+        "\"model_score\": null",
+    ));
+    // A confidence past the unit interval.
+    assert_corrupt_state_text(&verdict_state.replace(
+        "\"model_confidence\": 0.99",
+        "\"model_confidence\": 1.5",
+    ));
+    // A verdict outside the recorded names.
+    assert_corrupt_state_text(&verdict_state.replace(
+        "\"model_verdict\": \"de-escalate\"",
+        "\"model_verdict\": \"sideways\"",
+    ));
+    // A fallback pattern carrying a verdict.
+    let (head, tail) = split_at_last_kind(&verdict_state, "stage");
+    let damaged = format!(
+        "{head}{}",
+        tail.replacen(
+            "\"fallback_taken\": null",
+            "\"fallback_taken\": \"silence\"",
+            1
+        )
+    );
+    assert_corrupt_state_text(&damaged);
+    // Model fields standing on a proof record.
+    let dir = TestDir::new("model-damage-proof");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let proof_state = state_text(&dir);
+    let (head, tail) = split_at_kind(&proof_state, "proof");
+    let damaged = format!(
+        "{head}{}",
+        tail.replacen(
+            "\"fallback_taken\": null",
+            "\"fallback_taken\": null, \"model_verdict\": null, \"model_score\": null",
+            1
+        )
+    );
+    assert_corrupt_state_text(&damaged);
+    // A rise one step above the warrant with its model fields
+    // nulled stands behind no consultation and is refused.
+    let dir = TestDir::new("model-damage-rise");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.9, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    let rise_state = state_text(&dir);
+    let (head, tail) = split_at_kind(&rise_state, "stage");
+    let tail = tail
+        .replacen("\"model_name\": \"jev-1.13.0\"", "\"model_name\": null", 1)
+        .replacen("\"model_verdict\": \"escalate\"", "\"model_verdict\": null", 1)
+        .replacen("\"model_confidence\": 0.9", "\"model_confidence\": null", 1)
+        .replacen("\"model_score\": 0.5", "\"model_score\": null", 1);
+    assert_corrupt_state_text(&format!("{head}{tail}"));
+    // A step down carrying de-escalate below the bar.
+    let dir = TestDir::new("model-damage-step-down");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.90, 0.2)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    let step_state = state_text(&dir);
+    assert_corrupt_state_text(&step_state.replace(
+        "\"model_confidence\": 0.9",
+        "\"model_confidence\": 0.84",
+    ));
+    // A fallback class outside the closed vocabulary.
+    let dir = TestDir::new("model-damage-fallback");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![Consultation::Silence]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    let silence_state = state_text(&dir);
+    assert_corrupt_state_text(&silence_state.replace(
+        "\"fallback_taken\": \"silence\"",
+        "\"fallback_taken\": \"quiet\"",
+    ));
+}
+
+fn write_helper(dir: &TestDir, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.path().join(name);
+    std::fs::write(&path, body).expect("the helper is written");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+        .expect("the helper is executable");
+    path
+}
+
+fn subprocess(program: PathBuf, timeout: std::time::Duration) -> SubprocessTransport {
+    SubprocessTransport::new(program, Vec::new(), timeout)
+}
+
+#[test]
+fn subprocess_transport_reads_a_verdict_and_removes_its_payload() {
+    let dir = TestDir::new("model-subprocess-verdict");
+    let marker = dir.path().join("payload-path.txt");
+    let body = format!(
+        "#!/bin/sh\ngrep -q \"jev-1.13.0\" \"$2\" || exit 3\ngrep -q \"The run stands at stage\" \"$2\" || exit 3\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"escalate\", \"confidence\": 0.9}}, \"score\": {{\"level\": 7}}}}'\n",
+        marker.display()
+    );
+    let helper = write_helper(&dir, "verdict.sh", &body);
+    let transport = subprocess(helper, std::time::Duration::from_secs(10));
+    let outcome = transport.consult("The run stands at stage warn.");
+    assert_eq!(
+        outcome,
+        Consultation::Verdict {
+            model_name: MODEL_NAME.to_string(),
+            verdict: Verdict::Escalate,
+            confidence: 0.9,
+            score: 6.0 / 9.0,
+        }
+    );
+    // The payload file the helper was handed is removed when
+    // the call ends.
+    let payload_path = std::fs::read_to_string(&marker).unwrap();
+    assert!(!Path::new(&payload_path).exists());
+}
+
+#[test]
+fn subprocess_transport_classes() {
+    let dir = TestDir::new("model-subprocess-classes");
+    let cases: Vec<(&str, Consultation)> = vec![
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}}'\n",
+            Consultation::Abstention {
+                model_name: MODEL_NAME.to_string(),
+            },
+        ),
+        ("#!/bin/sh\nexit 0\n", Consultation::Silence),
+        ("#!/bin/sh\nexit 2\n", Consultation::CallFailed),
+        ("#!/bin/sh\nprintf 'not json'\n", Consultation::MalformedReply),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}}{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}}'\n",
+            Consultation::MalformedReply,
+        ),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"other-1.0\", \"choice\": {\"label\": null}}'\n",
+            Consultation::MalformedReply,
+        ),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 1.5}, \"score\": {\"level\": 5}}'\n",
+            Consultation::MalformedReply,
+        ),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 11}}'\n",
+            Consultation::MalformedReply,
+        ),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 1}}'\n",
+            Consultation::Verdict {
+                model_name: MODEL_NAME.to_string(),
+                verdict: Verdict::Hold,
+                confidence: 0.5,
+                score: 0.0,
+            },
+        ),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 10}}'\n",
+            Consultation::Verdict {
+                model_name: MODEL_NAME.to_string(),
+                verdict: Verdict::Hold,
+                confidence: 0.5,
+                score: 1.0,
+            },
+        ),
+    ];
+    for (index, (script, expected)) in cases.into_iter().enumerate() {
+        let helper = write_helper(&dir, &format!("case-{index}.sh"), script);
+        let transport = subprocess(helper, std::time::Duration::from_secs(10));
+        assert_eq!(transport.consult("vignette"), expected, "case {index}");
+    }
+    // A program that does not stand is a call failure.
+    let transport = subprocess(
+        dir.path().join("no-such-helper"),
+        std::time::Duration::from_secs(10),
+    );
+    assert_eq!(transport.consult("vignette"), Consultation::CallFailed);
+}
+
+#[test]
+fn subprocess_transport_enforces_its_deadline() {
+    let dir = TestDir::new("model-subprocess-deadline");
+    let helper = write_helper(&dir, "slow.sh", "#!/bin/sh\nsleep 5\n");
+    let transport = subprocess(helper, std::time::Duration::from_secs(1));
+    let started = std::time::Instant::now();
+    let outcome = transport.consult("vignette");
+    assert_eq!(outcome, Consultation::CallFailed);
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+}
+
+#[test]
+fn subprocess_transport_bounds_the_reply() {
+    let dir = TestDir::new("model-subprocess-bounds");
+    let helper = write_helper(
+        &dir,
+        "wide.sh",
+        "#!/bin/sh\nhead -c 70000 /dev/zero | tr '\\0' 'x'\n",
+    );
+    let transport = subprocess(helper, std::time::Duration::from_secs(10));
+    assert_eq!(transport.consult("vignette"), Consultation::MalformedReply);
+}
+
+#[test]
+fn cli_stage_and_log_carry_no_model_surface() {
+    let dir = TestDir::new("model-cli-surface");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.9, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(&["--state", &state, "stage", "run-a"], 0);
+    assert_eq!(stdout.lines().next(), Some("stage throttle"));
+    let (stdout, _) = run_cli(&["--state", &state, "log", "run-a"], 0);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines[lines.len() - 1].starts_with("3 stage"));
+    assert!(!stdout.contains("model"));
 }
