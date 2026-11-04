@@ -1652,6 +1652,16 @@ fn xval_proof_record_stage_disagrees_with_log() {
 }
 
 #[test]
+fn xval_spend_record_stage_disagrees_with_log() {
+    let base = TestDir::new("xval-spend-stage-base");
+    let valid = valid_document(&base);
+    let damaged = replace_nth(&valid, "\"stage\": \"none\"", "\"stage\": \"warn\"", 2);
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-spend-stage");
+    assert_xval_corrupt(&dir, &damaged, "not the stage");
+}
+
+#[test]
 fn xval_second_registered_record_refused() {
     let base = TestDir::new("xval-second-registered-base");
     let valid = valid_document(&base);
@@ -1879,17 +1889,41 @@ fn xval_step_down_record_where_no_warrant_falls_below() {
     assert_xval_corrupt(&dir, &damaged, "warrant no stage below");
 }
 
+#[test]
+fn xval_stage_record_naming_ceiling_below_its_warrant() {
+    let base = TestDir::new("xval-ceiling-warrant-base");
+    let valid = base_mid_both_sides(&base);
+    let damaged = set_reasons(&valid, 2, "[\"soft ceiling\", \"missed proofs\"]");
+    assert_ne!(damaged, valid);
+    let dir = TestDir::new("xval-ceiling-warrant");
+    assert_xval_corrupt(&dir, &damaged, "cannot warrant for this run");
+}
+
 /// Boundary control. The stage record of the mid ladder base
 /// stands between live spend records on both sides, so the
 /// spend standing at it is a range the soft ceiling falls
-/// inside, and naming the soft ceiling there is a state the
-/// writers could have written with the whole spend standing
-/// before the record. It reads clean.
+/// inside. Naming the soft ceiling there bounds the spend to
+/// the ceiling itself, and standing at cut budget on that
+/// bound is a state the writers could have written with the
+/// whole spend standing before the record and nothing after
+/// it. It reads clean.
 #[test]
 fn xval_undetermined_ceiling_reason_reads_clean() {
     let base = TestDir::new("xval-undetermined-base");
     let valid = base_mid_both_sides(&base);
     let varied = set_reasons(&valid, 2, "[\"soft ceiling\", \"missed proofs\"]");
+    let varied = replace_nth(
+        &varied,
+        "\"stage\": \"throttle\"",
+        "\"stage\": \"cut budget\"",
+        0,
+    );
+    let varied = replace_nth(
+        &varied,
+        "\"stage\": \"throttle\"",
+        "\"stage\": \"cut budget\"",
+        0,
+    );
     assert_ne!(varied, valid);
     let dir = TestDir::new("xval-undetermined");
     std::fs::write(state_path(&dir), &varied).unwrap();

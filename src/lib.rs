@@ -2059,20 +2059,45 @@ fn validate_stage_record_against_warrant(
             }
         }
     }
+    // The ceilings the record names and the ceilings it does
+    // not name bound the spend at the record from both sides,
+    // because the warrant names every live trigger, so the
+    // warranted stage is judged against the range those bounds
+    // leave.
+    let mut bounded_low = spend_low;
+    let mut bounded_high = spend_high;
+    for (ceiling, name) in [
+        (hard_ceiling, "hard ceiling"),
+        (soft_ceiling, "soft ceiling"),
+    ] {
+        if let Some(ceiling) = ceiling {
+            if record.reasons.iter().any(|reason| reason == name) {
+                bounded_low = bounded_low.max(ceiling);
+            } else {
+                bounded_high = bounded_high.min(ceiling - 1);
+            }
+        }
+    }
+    if bounded_low > bounded_high {
+        return Err(corrupt(format!(
+            "a stage record in the log of run {id_repr} names ceiling reasons \
+             no spend standing at the record can carry together"
+        )));
+    }
     let missed_index = missed_warrant_index(missed, missed_proof_limit);
     let zero_threshold = soft_ceiling.or(hard_ceiling);
     let mut spend_warrants: Vec<usize> = Vec::new();
-    if zero_threshold.is_none_or(|threshold| spend_low < threshold) {
+    if zero_threshold.is_none_or(|threshold| bounded_low < threshold) {
         spend_warrants.push(0);
     }
     if let Some(soft) = soft_ceiling {
-        let first_at_soft = spend_low.max(soft);
-        if first_at_soft <= spend_high && hard_ceiling.is_none_or(|hard| first_at_soft < hard) {
+        let first_at_soft = bounded_low.max(soft);
+        if first_at_soft <= bounded_high && hard_ceiling.is_none_or(|hard| first_at_soft < hard) {
             spend_warrants.push(stage_index("cut budget"));
         }
     }
     if let Some(hard) = hard_ceiling {
-        if spend_high >= hard {
+        if bounded_high >= hard {
             spend_warrants.push(stage_index("kill"));
         }
     }
