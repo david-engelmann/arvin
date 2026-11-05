@@ -42,7 +42,10 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use deadman::{Instant, Record, SubprocessTransport, Switch, Value, ESCALATION_BAR, DE_ESCALATION_BAR, MODEL_NAME, STAGES};
+use deadman::{
+    Instant, Record, SubprocessTransport, Switch, Value, DE_ESCALATION_BAR, ESCALATION_BAR,
+    MODEL_NAME, STAGES,
+};
 
 // ----------------------------------------------------------------
 // A small JSON reader and writer for the corpus and manifest
@@ -99,7 +102,10 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn parse(text: &'a str) -> Result<Json, String> {
-        let mut parser = Parser { bytes: text.as_bytes(), at: 0 };
+        let mut parser = Parser {
+            bytes: text.as_bytes(),
+            at: 0,
+        };
         parser.skip_space();
         let value = parser.value()?;
         parser.skip_space();
@@ -110,13 +116,18 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_space(&mut self) {
-        while self.at < self.bytes.len() && matches!(self.bytes[self.at], b' ' | b'\n' | b'\r' | b'\t') {
+        while self.at < self.bytes.len()
+            && matches!(self.bytes[self.at], b' ' | b'\n' | b'\r' | b'\t')
+        {
             self.at += 1;
         }
     }
 
     fn peek(&self) -> Result<u8, String> {
-        self.bytes.get(self.at).copied().ok_or_else(|| "unexpected end".to_string())
+        self.bytes
+            .get(self.at)
+            .copied()
+            .ok_or_else(|| "unexpected end".to_string())
     }
 
     fn value(&mut self) -> Result<Json, String> {
@@ -217,9 +228,14 @@ impl<'a> Parser<'a> {
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
                         b'u' => {
-                            let hex = self.bytes.get(self.at..self.at + 4).ok_or("short unicode escape")?;
-                            let text = std::str::from_utf8(hex).map_err(|_| "bad unicode escape")?;
-                            let code = u32::from_str_radix(text, 16).map_err(|_| "bad unicode escape")?;
+                            let hex = self
+                                .bytes
+                                .get(self.at..self.at + 4)
+                                .ok_or("short unicode escape")?;
+                            let text =
+                                std::str::from_utf8(hex).map_err(|_| "bad unicode escape")?;
+                            let code =
+                                u32::from_str_radix(text, 16).map_err(|_| "bad unicode escape")?;
                             self.at += 4;
                             out.push(char::from_u32(code).ok_or("bad unicode code")?);
                         }
@@ -250,15 +266,22 @@ impl<'a> Parser<'a> {
     fn number(&mut self) -> Result<Json, String> {
         let start = self.at;
         while self.at < self.bytes.len()
-            && matches!(self.bytes[self.at], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+            && matches!(
+                self.bytes[self.at],
+                b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
+            )
         {
             self.at += 1;
         }
         let text = std::str::from_utf8(&self.bytes[start..self.at]).map_err(|_| "bad number")?;
         if text.contains('.') || text.contains('e') || text.contains('E') {
-            text.parse::<f64>().map(Json::Float).map_err(|_| format!("bad float {text}"))
+            text.parse::<f64>()
+                .map(Json::Float)
+                .map_err(|_| format!("bad float {text}"))
         } else {
-            text.parse::<i64>().map(Json::Int).map_err(|_| format!("bad int {text}"))
+            text.parse::<i64>()
+                .map(Json::Int)
+                .map_err(|_| format!("bad int {text}"))
         }
     }
 }
@@ -332,21 +355,40 @@ enum Op {
 
 fn load_cases(corpus: &Json) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
-    for item in corpus.get("cases").and_then(Json::as_array).ok_or("corpus has no cases")? {
+    for item in corpus
+        .get("cases")
+        .and_then(Json::as_array)
+        .ok_or("corpus has no cases")?
+    {
         let register = item.get("register").ok_or("case has no register")?;
         let facts = item.get("facts").ok_or("case has no facts")?;
         let judge = item.get("judge").ok_or("case has no judge")?;
         let mut ops = Vec::new();
         let mut spend_total = 0i64;
-        for op in item.get("ops").and_then(Json::as_array).ok_or("case has no ops")? {
+        for op in item
+            .get("ops")
+            .and_then(Json::as_array)
+            .ok_or("case has no ops")?
+        {
             let at = op.get("at").and_then(Json::as_i64).ok_or("op has no at")?;
-            match op.get("op").and_then(Json::as_str).ok_or("op has no kind")? {
+            match op
+                .get("op")
+                .and_then(Json::as_str)
+                .ok_or("op has no kind")?
+            {
                 "prove" => ops.push(Op::Prove {
                     at,
-                    note: op.get("note").and_then(Json::as_str).unwrap_or("").to_string(),
+                    note: op
+                        .get("note")
+                        .and_then(Json::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                 }),
                 "spend" => {
-                    let amount = op.get("amount").and_then(Json::as_i64).ok_or("spend has no amount")?;
+                    let amount = op
+                        .get("amount")
+                        .and_then(Json::as_i64)
+                        .ok_or("spend has no amount")?;
                     spend_total += amount;
                     ops.push(Op::Spend { at, amount });
                 }
@@ -355,22 +397,64 @@ fn load_cases(corpus: &Json) -> Result<Vec<Case>, String> {
             }
         }
         cases.push(Case {
-            id: item.get("id").and_then(Json::as_str).ok_or("case has no id")?.to_string(),
-            expected: item.get("expected").and_then(Json::as_str).map(str::to_string),
-            run_id: register.get("run_id").and_then(Json::as_str).ok_or("no run id")?.to_string(),
-            interval: register.get("proof_interval_seconds").and_then(Json::as_i64).ok_or("no interval")?,
-            limit: register.get("missed_proof_limit").and_then(Json::as_i64).ok_or("no limit")?,
+            id: item
+                .get("id")
+                .and_then(Json::as_str)
+                .ok_or("case has no id")?
+                .to_string(),
+            expected: item
+                .get("expected")
+                .and_then(Json::as_str)
+                .map(str::to_string),
+            run_id: register
+                .get("run_id")
+                .and_then(Json::as_str)
+                .ok_or("no run id")?
+                .to_string(),
+            interval: register
+                .get("proof_interval_seconds")
+                .and_then(Json::as_i64)
+                .ok_or("no interval")?,
+            limit: register
+                .get("missed_proof_limit")
+                .and_then(Json::as_i64)
+                .ok_or("no limit")?,
             soft: register.get("soft_ceiling").and_then(Json::as_i64),
             hard: register.get("hard_ceiling").and_then(Json::as_i64),
             spend_total,
             ops,
-            judge_at: judge.get("at").and_then(Json::as_i64).ok_or("judge has no at")?,
-            context: judge.get("context").and_then(Json::as_str).ok_or("judge has no context")?.to_string(),
-            stage_before: facts.get("stage_before").and_then(Json::as_str).ok_or("no stage_before")?.to_string(),
-            warranted: facts.get("warranted").and_then(Json::as_str).ok_or("no warranted")?.to_string(),
-            missed: facts.get("missed").and_then(Json::as_i64).ok_or("no missed")?,
-            streak: facts.get("streak").and_then(Json::as_i64).ok_or("no streak")?,
-            seat: facts.get("seat").and_then(Json::as_str).ok_or("no seat")?.to_string(),
+            judge_at: judge
+                .get("at")
+                .and_then(Json::as_i64)
+                .ok_or("judge has no at")?,
+            context: judge
+                .get("context")
+                .and_then(Json::as_str)
+                .ok_or("judge has no context")?
+                .to_string(),
+            stage_before: facts
+                .get("stage_before")
+                .and_then(Json::as_str)
+                .ok_or("no stage_before")?
+                .to_string(),
+            warranted: facts
+                .get("warranted")
+                .and_then(Json::as_str)
+                .ok_or("no warranted")?
+                .to_string(),
+            missed: facts
+                .get("missed")
+                .and_then(Json::as_i64)
+                .ok_or("no missed")?,
+            streak: facts
+                .get("streak")
+                .and_then(Json::as_i64)
+                .ok_or("no streak")?,
+            seat: facts
+                .get("seat")
+                .and_then(Json::as_str)
+                .ok_or("no seat")?
+                .to_string(),
         });
     }
     Ok(cases)
@@ -429,10 +513,21 @@ fn standing_facts(state_path: &PathBuf, run_id: &str) -> Result<(String, i64), S
     let bytes = std::fs::read(state_path).map_err(|error| format!("state read failed: {error}"))?;
     let text = String::from_utf8(bytes).map_err(|_| "state is not utf8")?;
     let doc = Parser::parse(&text)?;
-    for run in doc.get("runs").and_then(Json::as_array).ok_or("state has no runs")? {
+    for run in doc
+        .get("runs")
+        .and_then(Json::as_array)
+        .ok_or("state has no runs")?
+    {
         if run.get("id").and_then(Json::as_str) == Some(run_id) {
-            let stage = run.get("stage").and_then(Json::as_str).ok_or("run has no stage")?.to_string();
-            let streak = run.get("clear_streak").and_then(Json::as_i64).ok_or("run has no streak")?;
+            let stage = run
+                .get("stage")
+                .and_then(Json::as_str)
+                .ok_or("run has no stage")?
+                .to_string();
+            let streak = run
+                .get("clear_streak")
+                .and_then(Json::as_i64)
+                .ok_or("run has no streak")?;
             return Ok((stage, streak));
         }
     }
@@ -442,10 +537,14 @@ fn standing_facts(state_path: &PathBuf, run_id: &str) -> Result<(String, i64), S
 /// Read the facts the vignette states out of the payload the
 /// transport wrote, as a second cross check on the corpus facts.
 fn payload_facts(capture_path: &PathBuf) -> Result<(String, String, i64, i64), String> {
-    let bytes = std::fs::read(capture_path).map_err(|error| format!("payload capture read failed: {error}"))?;
+    let bytes = std::fs::read(capture_path)
+        .map_err(|error| format!("payload capture read failed: {error}"))?;
     let text = String::from_utf8(bytes).map_err(|_| "payload is not utf8")?;
     let doc = Parser::parse(&text)?;
-    let state = doc.get("state").and_then(Json::as_str).ok_or("payload has no state")?;
+    let state = doc
+        .get("state")
+        .and_then(Json::as_str)
+        .ok_or("payload has no state")?;
     let mut stage = None;
     let mut warranted = None;
     let mut missed = None;
@@ -458,11 +557,18 @@ fn payload_facts(capture_path: &PathBuf) -> Result<(String, String, i64, i64), S
             warranted = Some(rest.trim_end_matches('.').to_string());
         }
         if let Some(rest) = line.strip_prefix("The missed proof count stands at ") {
-            let number: String = rest.chars().take_while(|ch| ch.is_ascii_digit() || *ch == '-').collect();
+            let number: String = rest
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+                .collect();
             missed = number.parse::<i64>().ok();
         }
         if let Some(rest) = line.strip_prefix("The standing clear streak stands at ") {
-            let number: String = rest.trim_end_matches('.').chars().take_while(|ch| ch.is_ascii_digit() || *ch == '-').collect();
+            let number: String = rest
+                .trim_end_matches('.')
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit() || *ch == '-')
+                .collect();
             streak = number.parse::<i64>().ok();
         }
     }
@@ -475,7 +581,10 @@ fn payload_facts(capture_path: &PathBuf) -> Result<(String, String, i64, i64), S
 }
 
 fn stage_index(stage: &str) -> usize {
-    STAGES.iter().position(|name| *name == stage).expect("a corpus stage is in the ladder")
+    STAGES
+        .iter()
+        .position(|name| *name == stage)
+        .expect("a corpus stage is in the ladder")
 }
 
 fn missed_warrant_index(missed: i64, limit: i64) -> usize {
@@ -567,9 +676,13 @@ fn judge_case(
                 case.id, case.stage_before, case.warranted, case.missed, case.streak
             ));
         }
-        let log = switch.log(&text(&case.run_id)).map_err(|error| error.message().to_string())?;
+        let log = switch
+            .log(&text(&case.run_id))
+            .map_err(|error| error.message().to_string())?;
         let record = log.last().cloned().ok_or("the log stands empty")?;
-        if record.kind != "stage" || (record.model_verdict.is_none() && record.fallback_taken.is_none()) {
+        if record.kind != "stage"
+            || (record.model_verdict.is_none() && record.fallback_taken.is_none())
+        {
             return Err(format!(
                 "{}: the judgment appended no consultation record, last record kind {} stands",
                 case.id, record.kind
@@ -594,7 +707,11 @@ fn judge_case(
             );
             continue;
         }
-        return Ok(Attempt { record, stage_after, calls });
+        return Ok(Attempt {
+            record,
+            stage_after,
+            calls,
+        });
     }
     unreachable!("the attempt loop returns")
 }
@@ -638,7 +755,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let call_shape = corpus.get("call_shape").and_then(Json::as_str).unwrap_or("").to_string();
+    let call_shape = corpus
+        .get("call_shape")
+        .and_then(Json::as_str)
+        .unwrap_or("")
+        .to_string();
     match mode {
         "record" | "evaluate" => {
             if argv.len() < 7 {
@@ -650,7 +771,16 @@ fn main() -> ExitCode {
             let capture_dir = PathBuf::from(&argv[4]);
             let program = argv[5].clone();
             let args: Vec<String> = argv[6..].to_vec();
-            run_batch(mode, &cases, &call_shape, &out_path, &work_dir, &capture_dir, &program, &args)
+            run_batch(
+                mode,
+                &cases,
+                &call_shape,
+                &out_path,
+                &work_dir,
+                &capture_dir,
+                &program,
+                &args,
+            )
         }
         "verify" => {
             if argv.len() < 7 {
@@ -726,7 +856,11 @@ fn run_batch(
     let mut correct = 0usize;
     let mut misses: Vec<String> = Vec::new();
     for case in cases {
-        let step_prefix = if mode == "record" { "record" } else { "evaluate" };
+        let step_prefix = if mode == "record" {
+            "record"
+        } else {
+            "evaluate"
+        };
         let attempt = match judge_case(case, work_dir, capture_dir, program, args, step_prefix) {
             Ok(attempt) => attempt,
             Err(error) => {
@@ -740,11 +874,17 @@ fn run_batch(
         if mode == "record" {
             let payload = capture_dir.join(format!("{}.{}.library-payload.json", case.id, step));
             let reply = capture_dir.join(format!("{}.{}.reply.json", case.id, step));
-            if let Err(error) = std::fs::copy(&payload, out_path.join("requests").join(format!("{}.json", case.id))) {
+            if let Err(error) = std::fs::copy(
+                &payload,
+                out_path.join("requests").join(format!("{}.json", case.id)),
+            ) {
                 eprintln!("{}: request fixture copy failed: {error}", case.id);
                 return ExitCode::from(1);
             }
-            if let Err(error) = std::fs::copy(&reply, out_path.join("replies").join(format!("{}.json", case.id))) {
+            if let Err(error) = std::fs::copy(
+                &reply,
+                out_path.join("replies").join(format!("{}.json", case.id)),
+            ) {
                 eprintln!("{}: reply fixture copy failed: {error}", case.id);
                 return ExitCode::from(1);
             }
@@ -763,7 +903,12 @@ fn run_batch(
         }
         println!(
             "{}: attempts {} (running call total {}), verdict {:?}, stage {} to {}",
-            case.id, attempt.calls, total_calls, attempt.record.model_verdict, case.stage_before, attempt.stage_after
+            case.id,
+            attempt.calls,
+            total_calls,
+            attempt.record.model_verdict,
+            case.stage_before,
+            attempt.stage_after
         );
         entries.push(format!(
             "    {{\"id\": {}, \"expected\": {}, \"attempts\": {}, \"stage_before\": {}, \"stage_after\": {}, \"record_seq\": {}, \"recorded\": {}}}",

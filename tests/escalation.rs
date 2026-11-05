@@ -89,7 +89,10 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn parse(text: &'a str) -> Result<Json, String> {
-        let mut parser = Parser { bytes: text.as_bytes(), at: 0 };
+        let mut parser = Parser {
+            bytes: text.as_bytes(),
+            at: 0,
+        };
         parser.skip_space();
         let value = parser.value()?;
         parser.skip_space();
@@ -100,13 +103,18 @@ impl<'a> Parser<'a> {
     }
 
     fn skip_space(&mut self) {
-        while self.at < self.bytes.len() && matches!(self.bytes[self.at], b' ' | b'\n' | b'\r' | b'\t') {
+        while self.at < self.bytes.len()
+            && matches!(self.bytes[self.at], b' ' | b'\n' | b'\r' | b'\t')
+        {
             self.at += 1;
         }
     }
 
     fn peek(&self) -> Result<u8, String> {
-        self.bytes.get(self.at).copied().ok_or_else(|| "unexpected end".to_string())
+        self.bytes
+            .get(self.at)
+            .copied()
+            .ok_or_else(|| "unexpected end".to_string())
     }
 
     fn value(&mut self) -> Result<Json, String> {
@@ -207,9 +215,14 @@ impl<'a> Parser<'a> {
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
                         b'u' => {
-                            let hex = self.bytes.get(self.at..self.at + 4).ok_or("short unicode escape")?;
-                            let text = std::str::from_utf8(hex).map_err(|_| "bad unicode escape")?;
-                            let code = u32::from_str_radix(text, 16).map_err(|_| "bad unicode escape")?;
+                            let hex = self
+                                .bytes
+                                .get(self.at..self.at + 4)
+                                .ok_or("short unicode escape")?;
+                            let text =
+                                std::str::from_utf8(hex).map_err(|_| "bad unicode escape")?;
+                            let code =
+                                u32::from_str_radix(text, 16).map_err(|_| "bad unicode escape")?;
                             self.at += 4;
                             out.push(char::from_u32(code).ok_or("bad unicode code")?);
                         }
@@ -239,15 +252,22 @@ impl<'a> Parser<'a> {
     fn number(&mut self) -> Result<Json, String> {
         let start = self.at;
         while self.at < self.bytes.len()
-            && matches!(self.bytes[self.at], b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')
+            && matches!(
+                self.bytes[self.at],
+                b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
+            )
         {
             self.at += 1;
         }
         let text = std::str::from_utf8(&self.bytes[start..self.at]).map_err(|_| "bad number")?;
         if text.contains('.') || text.contains('e') || text.contains('E') {
-            text.parse::<f64>().map(Json::Float).map_err(|_| format!("bad float {text}"))
+            text.parse::<f64>()
+                .map(Json::Float)
+                .map_err(|_| format!("bad float {text}"))
         } else {
-            text.parse::<i64>().map(Json::Int).map_err(|_| format!("bad int {text}"))
+            text.parse::<i64>()
+                .map(Json::Int)
+                .map_err(|_| format!("bad int {text}"))
         }
     }
 }
@@ -257,7 +277,10 @@ impl<'a> Parser<'a> {
 // ----------------------------------------------------------------
 
 fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("escalation")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("escalation")
 }
 
 fn read_json(path: &Path) -> Json {
@@ -324,15 +347,33 @@ fn load_case(id: &str) -> Case {
     let recorded = entry.get("recorded").expect("an entry carries its record");
     let mut ops = Vec::new();
     let mut spend_total = 0i64;
-    for op in item.get("ops").and_then(Json::as_array).expect("a case carries ops") {
-        let at = op.get("at").and_then(Json::as_i64).expect("an op carries its instant");
-        match op.get("op").and_then(Json::as_str).expect("an op carries its kind") {
+    for op in item
+        .get("ops")
+        .and_then(Json::as_array)
+        .expect("a case carries ops")
+    {
+        let at = op
+            .get("at")
+            .and_then(Json::as_i64)
+            .expect("an op carries its instant");
+        match op
+            .get("op")
+            .and_then(Json::as_str)
+            .expect("an op carries its kind")
+        {
             "prove" => ops.push(Op::Prove {
                 at,
-                note: op.get("note").and_then(Json::as_str).unwrap_or("").to_string(),
+                note: op
+                    .get("note")
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             }),
             "spend" => {
-                let amount = op.get("amount").and_then(Json::as_i64).expect("a spend carries its amount");
+                let amount = op
+                    .get("amount")
+                    .and_then(Json::as_i64)
+                    .expect("a spend carries its amount");
                 spend_total += amount;
                 ops.push(Op::Spend { at, amount });
             }
@@ -342,18 +383,43 @@ fn load_case(id: &str) -> Case {
     }
     Case {
         id: id.to_string(),
-        run_id: register.get("run_id").and_then(Json::as_str).expect("a register carries its run id").to_string(),
-        interval: register.get("proof_interval_seconds").and_then(Json::as_i64).expect("interval"),
-        limit: register.get("missed_proof_limit").and_then(Json::as_i64).expect("limit"),
+        run_id: register
+            .get("run_id")
+            .and_then(Json::as_str)
+            .expect("a register carries its run id")
+            .to_string(),
+        interval: register
+            .get("proof_interval_seconds")
+            .and_then(Json::as_i64)
+            .expect("interval"),
+        limit: register
+            .get("missed_proof_limit")
+            .and_then(Json::as_i64)
+            .expect("limit"),
         soft: register.get("soft_ceiling").and_then(Json::as_i64),
         hard: register.get("hard_ceiling").and_then(Json::as_i64),
         spend_total,
         ops,
-        judge_at: judge.get("at").and_then(Json::as_i64).expect("judge instant"),
-        context: judge.get("context").and_then(Json::as_str).expect("judge context").to_string(),
-        stage_before: facts.get("stage_before").and_then(Json::as_str).expect("stage before").to_string(),
+        judge_at: judge
+            .get("at")
+            .and_then(Json::as_i64)
+            .expect("judge instant"),
+        context: judge
+            .get("context")
+            .and_then(Json::as_str)
+            .expect("judge context")
+            .to_string(),
+        stage_before: facts
+            .get("stage_before")
+            .and_then(Json::as_str)
+            .expect("stage before")
+            .to_string(),
         missed: facts.get("missed").and_then(Json::as_i64).expect("missed"),
-        seat: facts.get("seat").and_then(Json::as_str).expect("seat").to_string(),
+        seat: facts
+            .get("seat")
+            .and_then(Json::as_str)
+            .expect("seat")
+            .to_string(),
         expected_record: Recorded {
             model_name: opt_str(recorded, "model_name"),
             model_verdict: opt_str(recorded, "model_verdict"),
@@ -361,7 +427,11 @@ fn load_case(id: &str) -> Case {
             model_score: recorded.get("model_score").and_then(Json::as_f64),
             fallback_taken: opt_str(recorded, "fallback_taken"),
         },
-        stage_after: entry.get("stage_after").and_then(Json::as_str).expect("stage after").to_string(),
+        stage_after: entry
+            .get("stage_after")
+            .and_then(Json::as_str)
+            .expect("stage after")
+            .to_string(),
     }
 }
 
@@ -451,7 +521,10 @@ fn write_helper(dir: &TestDir, name: &str, body: &str) -> PathBuf {
 }
 
 fn stage_index(stage: &str) -> usize {
-    STAGES.iter().position(|name| *name == stage).expect("a stage is in the ladder")
+    STAGES
+        .iter()
+        .position(|name| *name == stage)
+        .expect("a stage is in the ladder")
 }
 
 fn missed_warrant_index(missed: i64, limit: i64) -> usize {
@@ -470,7 +543,11 @@ fn missed_warrant_index(missed: i64, limit: i64) -> usize {
 fn mirror_stage_after(case: &Case) -> String {
     let before = stage_index(&case.stage_before);
     let recorded = &case.expected_record;
-    let after = match (case.seat.as_str(), recorded.model_verdict.as_deref(), recorded.model_confidence) {
+    let after = match (
+        case.seat.as_str(),
+        recorded.model_verdict.as_deref(),
+        recorded.model_confidence,
+    ) {
         ("held", Some("escalate"), Some(value)) if value >= ESCALATION_BAR => before + 1,
         ("fall", Some("de-escalate"), Some(value))
             if value >= DE_ESCALATION_BAR
@@ -487,13 +564,41 @@ fn mirror_stage_after(case: &Case) -> String {
 
 fn assert_record_matches(case: &Case, record: &Record) {
     let expected = &case.expected_record;
-    assert_eq!(record.kind, "stage", "{}: the consultation record is a stage record", case.id);
-    assert_eq!(record.model_name, expected.model_name, "{}: model name", case.id);
-    assert_eq!(record.model_verdict, expected.model_verdict, "{}: verdict", case.id);
-    assert_eq!(record.model_confidence, expected.model_confidence, "{}: confidence", case.id);
-    assert_eq!(record.model_score, expected.model_score, "{}: score", case.id);
-    assert_eq!(record.fallback_taken, expected.fallback_taken, "{}: fallback", case.id);
-    assert_eq!(record.stage, case.stage_after, "{}: recorded stage", case.id);
+    assert_eq!(
+        record.kind, "stage",
+        "{}: the consultation record is a stage record",
+        case.id
+    );
+    assert_eq!(
+        record.model_name, expected.model_name,
+        "{}: model name",
+        case.id
+    );
+    assert_eq!(
+        record.model_verdict, expected.model_verdict,
+        "{}: verdict",
+        case.id
+    );
+    assert_eq!(
+        record.model_confidence, expected.model_confidence,
+        "{}: confidence",
+        case.id
+    );
+    assert_eq!(
+        record.model_score, expected.model_score,
+        "{}: score",
+        case.id
+    );
+    assert_eq!(
+        record.fallback_taken, expected.fallback_taken,
+        "{}: fallback",
+        case.id
+    );
+    assert_eq!(
+        record.stage, case.stage_after,
+        "{}: recorded stage",
+        case.id
+    );
     assert_eq!(
         mirror_stage_after(case),
         case.stage_after,
@@ -507,7 +612,10 @@ fn recorded_consultation(case: &Case) -> Consultation {
     if let Some(class) = &recorded.fallback_taken {
         return match class.as_str() {
             "abstention" => Consultation::Abstention {
-                model_name: recorded.model_name.clone().expect("a fallback names its model"),
+                model_name: recorded
+                    .model_name
+                    .clone()
+                    .expect("a fallback names its model"),
             },
             "call failed" => Consultation::CallFailed,
             "silence" => Consultation::Silence,
@@ -523,14 +631,22 @@ fn recorded_consultation(case: &Case) -> Consultation {
             other => panic!("unknown verdict {other}"),
         };
         return Consultation::Verdict {
-            model_name: recorded.model_name.clone().expect("a verdict names its model"),
+            model_name: recorded
+                .model_name
+                .clone()
+                .expect("a verdict names its model"),
             verdict,
-            confidence: recorded.model_confidence.expect("a verdict carries its confidence"),
+            confidence: recorded
+                .model_confidence
+                .expect("a verdict carries its confidence"),
             score: recorded.model_score.expect("a verdict carries its score"),
         };
     }
     Consultation::Abstention {
-        model_name: recorded.model_name.clone().expect("an abstention names its model"),
+        model_name: recorded
+            .model_name
+            .clone()
+            .expect("an abstention names its model"),
     }
 }
 
@@ -541,7 +657,9 @@ fn replay(case_id: &str) {
     // is handed and prints the recorded reply body.
     let (switch, state_path) = build_document(&case, &dir, "wire.json");
     let capture = dir.path().join("payload.json");
-    let reply_path = fixtures_dir().join("replies").join(format!("{case_id}.json"));
+    let reply_path = fixtures_dir()
+        .join("replies")
+        .join(format!("{case_id}.json"));
     let helper = write_helper(
         &dir,
         "reply.sh",
@@ -551,7 +669,8 @@ fn replay(case_id: &str) {
             reply_path.display()
         ),
     );
-    let transport = SubprocessTransport::new(helper, Vec::new(), std::time::Duration::from_secs(10));
+    let transport =
+        SubprocessTransport::new(helper, Vec::new(), std::time::Duration::from_secs(10));
     let report = switch
         .stage_with_model(
             &text(&case.run_id),
@@ -560,10 +679,17 @@ fn replay(case_id: &str) {
             Some(&case.context),
         )
         .expect("the judgment runs");
-    assert_eq!(report.stage, case.stage_after, "{case_id}: the report stage");
+    assert_eq!(
+        report.stage, case.stage_after,
+        "{case_id}: the report stage"
+    );
     let payload = std::fs::read(&capture).expect("the helper captured the payload");
-    let recorded_request = std::fs::read(fixtures_dir().join("requests").join(format!("{case_id}.json")))
-        .expect("the recorded request reads");
+    let recorded_request = std::fs::read(
+        fixtures_dir()
+            .join("requests")
+            .join(format!("{case_id}.json")),
+    )
+    .expect("the recorded request reads");
     assert_eq!(
         payload, recorded_request,
         "{case_id}: the payload the library builds matches the recorded request byte for byte"
@@ -576,7 +702,10 @@ fn replay(case_id: &str) {
     // transport must land the same record and the same bytes.
     let (typed_switch, typed_path) = build_document(&case, &dir, "typed.json");
     let fixture = FixtureTransport::new(
-        case.expected_record.model_name.as_deref().expect("the record names its model"),
+        case.expected_record
+            .model_name
+            .as_deref()
+            .expect("the record names its model"),
         vec![recorded_consultation(&case)],
     );
     let typed_report = typed_switch
@@ -587,11 +716,19 @@ fn replay(case_id: &str) {
             Some(&case.context),
         )
         .expect("the typed judgment runs");
-    assert_eq!(typed_report.stage, case.stage_after, "{case_id}: the typed report stage");
-    let typed_log = typed_switch.log(&text(&case.run_id)).expect("the typed log reads");
+    assert_eq!(
+        typed_report.stage, case.stage_after,
+        "{case_id}: the typed report stage"
+    );
+    let typed_log = typed_switch
+        .log(&text(&case.run_id))
+        .expect("the typed log reads");
     let typed_record = typed_log.last().expect("the typed log carries its record");
     assert_record_matches(&case, typed_record);
-    assert_eq!(typed_record, record, "{case_id}: the two replays land the same record");
+    assert_eq!(
+        typed_record, record,
+        "{case_id}: the two replays land the same record"
+    );
     let typed_bytes = std::fs::read(&typed_path).expect("the typed state file reads");
     assert_eq!(
         wire_bytes, typed_bytes,
@@ -668,7 +805,10 @@ fn a_recorded_case_replays_to_identical_state_bytes() {
     for name in ["one.json", "two.json"] {
         let (switch, state_path) = build_document(&case, &dir, name);
         let fixture = FixtureTransport::new(
-            case.expected_record.model_name.as_deref().expect("the record names its model"),
+            case.expected_record
+                .model_name
+                .as_deref()
+                .expect("the record names its model"),
             vec![recorded_consultation(&case)],
         );
         switch
@@ -681,5 +821,8 @@ fn a_recorded_case_replays_to_identical_state_bytes() {
             .expect("the judgment runs");
         states.push(std::fs::read(&state_path).expect("the state file reads"));
     }
-    assert_eq!(states[0], states[1], "two replays of one recorded case land identical bytes");
+    assert_eq!(
+        states[0], states[1],
+        "two replays of one recorded case land identical bytes"
+    );
 }
