@@ -39,7 +39,7 @@
 //! CASE.STEP.reply.json, where STEP is record-a1, record-a2,
 //! evaluate-a1, evaluate-a2, or verify for the mode and attempt.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use deadman::{
@@ -476,8 +476,8 @@ fn int(value: i64) -> Value {
     Value::Int(value as i128)
 }
 
-fn build_document(case: &Case, state_path: &PathBuf) -> Result<Switch, String> {
-    let switch = Switch::new(state_path.clone());
+fn build_document(case: &Case, state_path: &Path) -> Result<Switch, String> {
+    let switch = Switch::new(state_path.to_path_buf());
     let base = base_instant();
     switch
         .register(
@@ -509,7 +509,7 @@ fn build_document(case: &Case, state_path: &PathBuf) -> Result<Switch, String> {
 
 /// Read the standing stage and streak of the run out of the state
 /// file the operations wrote, as a cross check on the corpus facts.
-fn standing_facts(state_path: &PathBuf, run_id: &str) -> Result<(String, i64), String> {
+fn standing_facts(state_path: &Path, run_id: &str) -> Result<(String, i64), String> {
     let bytes = std::fs::read(state_path).map_err(|error| format!("state read failed: {error}"))?;
     let text = String::from_utf8(bytes).map_err(|_| "state is not utf8")?;
     let doc = Parser::parse(&text)?;
@@ -536,7 +536,7 @@ fn standing_facts(state_path: &PathBuf, run_id: &str) -> Result<(String, i64), S
 
 /// Read the facts the vignette states out of the payload the
 /// transport wrote, as a second cross check on the corpus facts.
-fn payload_facts(capture_path: &PathBuf) -> Result<(String, String, i64, i64), String> {
+fn payload_facts(capture_path: &Path) -> Result<(String, String, i64, i64), String> {
     let bytes = std::fs::read(capture_path)
         .map_err(|error| format!("payload capture read failed: {error}"))?;
     let text = String::from_utf8(bytes).map_err(|_| "payload is not utf8")?;
@@ -609,8 +609,8 @@ fn mirror_stage_after(case: &Case, record: &Record) -> String {
         ("fall", Some("de-escalate"), Some(value))
             if value >= DE_ESCALATION_BAR
                 && missed_warrant_index(case.missed, case.limit) < before
-                && case.soft.map_or(true, |ceiling| case.spend_total < ceiling)
-                && case.hard.map_or(true, |ceiling| case.spend_total < ceiling) =>
+                && case.soft.is_none_or(|ceiling| case.spend_total < ceiling)
+                && case.hard.is_none_or(|ceiling| case.spend_total < ceiling) =>
         {
             before - 1
         }
@@ -630,13 +630,12 @@ struct Attempt {
 /// consultation is counted in the returned total.
 fn judge_case(
     case: &Case,
-    work_dir: &PathBuf,
-    capture_dir: &PathBuf,
+    work_dir: &Path,
+    capture_dir: &Path,
     program: &str,
     args: &[String],
     step_prefix: &str,
 ) -> Result<Attempt, String> {
-    let mut calls = 0usize;
     for attempt in 1..=2usize {
         let step = format!("{step_prefix}-a{attempt}");
         let state_path = work_dir.join(format!("{}-{step}.json", case.id));
@@ -663,7 +662,6 @@ fn judge_case(
                 Some(&case.context),
             )
             .map_err(|error| format!("{}: judgment failed: {}", case.id, error.message()))?;
-        calls += 1;
         let payload_path = capture_dir.join(format!("{}.{}.library-payload.json", case.id, step));
         let (p_stage, p_warranted, p_missed, p_streak) = payload_facts(&payload_path)?;
         if p_stage != case.stage_before
@@ -707,10 +705,12 @@ fn judge_case(
             );
             continue;
         }
+        // Each pass through the loop performs exactly one
+        // consultation, so the attempt number is the call count.
         return Ok(Attempt {
             record,
             stage_after,
-            calls,
+            calls: attempt,
         });
     }
     unreachable!("the attempt loop returns")
@@ -833,9 +833,9 @@ fn run_batch(
     mode: &str,
     cases: &[Case],
     call_shape: &str,
-    out_path: &PathBuf,
-    work_dir: &PathBuf,
-    capture_dir: &PathBuf,
+    out_path: &Path,
+    work_dir: &Path,
+    capture_dir: &Path,
     program: &str,
     args: &[String],
 ) -> ExitCode {
@@ -942,7 +942,7 @@ fn run_batch(
     let target = if mode == "record" {
         out_path.join("manifest.json")
     } else {
-        out_path.clone()
+        out_path.to_path_buf()
     };
     if let Err(error) = std::fs::write(&target, document) {
         eprintln!("output write failed: {error}");

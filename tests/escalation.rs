@@ -552,8 +552,8 @@ fn mirror_stage_after(case: &Case) -> String {
         ("fall", Some("de-escalate"), Some(value))
             if value >= DE_ESCALATION_BAR
                 && missed_warrant_index(case.missed, case.limit) < before
-                && case.soft.map_or(true, |ceiling| case.spend_total < ceiling)
-                && case.hard.map_or(true, |ceiling| case.spend_total < ceiling) =>
+                && case.soft.is_none_or(|ceiling| case.spend_total < ceiling)
+                && case.hard.is_none_or(|ceiling| case.spend_total < ceiling) =>
         {
             before - 1
         }
