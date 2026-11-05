@@ -471,7 +471,6 @@ def test_state_files_cross_between_the_binding_and_the_command_line(
     ]
 
 
-
 def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
     # The consultation stands on a hold record at warn, the
     # shape a consultation at the held seat writes. The rise

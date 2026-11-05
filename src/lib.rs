@@ -3270,7 +3270,6 @@ fn render_vignette(
         }
     }
     // The record that entered the standing stage opens the
-    // The record that entered the standing stage opens the
     // trailing run of stage records at that stage, so the
     // traffic since the stage was entered is the traffic
     // after that record.
@@ -3483,6 +3482,11 @@ fn extract_reply(body: &str, pinned: &str) -> Consultation {
 /// A body past the bound is a malformed reply under DM-16.
 const REPLY_MAX_BYTES: usize = 64 * 1024;
 
+/// The grace the subprocess transport grants its reader
+/// thread to deliver the drained reply after the helper
+/// status resolves, before the call fails under DM-20.
+const READER_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// A live transport that drives an operator supplied helper
 /// command, the connector helper of the program being its
 /// intended program. On a consultation it writes the call
@@ -3591,7 +3595,7 @@ impl SubprocessTransport {
         // stands bounded by a short grace, and a reader that
         // has not finished inside it fails the call, with its
         // thread left to end when the pipe finally closes.
-        let (body, total) = match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+        let (body, total) = match receiver.recv_timeout(READER_GRACE) {
             Ok(reply) => reply,
             Err(_) => return Consultation::CallFailed,
         };
