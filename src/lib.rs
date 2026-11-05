@@ -15,9 +15,11 @@
 //! current instant as an argument, and this module reads no wall
 //! clock. The deterministic operations call no model, and the one
 //! model entry point calls only the transport the caller supplies.
-//! The one random draw in the module
-//! names a temporary file at publication, and it reaches no
-//! stage, no reason, no record, and no state byte. The stage an
+//! The random draws in the module
+//! name temporary files, the file a publication writes before
+//! its rename and the payload file a subprocess consultation
+//! writes before its helper runs, and no draw reaches a
+//! stage, a reason, a record, or a state byte. The stage an
 //! evaluation reports is a deterministic function of the recorded
 //! state and the instant.
 //!
@@ -1833,115 +1835,109 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             return Err(corrupt("a log record names one reason twice".to_string()));
         }
     }
-    let (model_name, model_verdict, model_confidence, model_score, fallback_taken) =
-        if extended {
-            if kind != "stage" {
-                return Err(corrupt(format!(
-                    "a {kind} record carries the extended model fields, which \
+    let (model_name, model_verdict, model_confidence, model_score, fallback_taken) = if extended {
+        if kind != "stage" {
+            return Err(corrupt(format!(
+                "a {kind} record carries the extended model fields, which \
                      stand only on a stage record"
+            )));
+        }
+        let model_name = match map["model_name"] {
+            Value::Null => None,
+            Value::Str(text) if model_name_shape_ok(text) => Some(text.clone()),
+            _ => {
+                return Err(corrupt(
+                    "a stage record carries a model name outside the recorded \
+                         shape"
+                        .to_string(),
+                ))
+            }
+        };
+        let model_verdict = match map["model_verdict"] {
+            Value::Null => None,
+            Value::Str(text) if VERDICT_LABELS.contains(&text.as_str()) => Some(text.clone()),
+            _ => {
+                return Err(corrupt(
+                    "a stage record carries a model verdict outside the \
+                         recorded names"
+                        .to_string(),
+                ))
+            }
+        };
+        let model_confidence = match map["model_confidence"] {
+            Value::Null => None,
+            value => match model_number_unit(value) {
+                Some(number) => Some(number),
+                None => {
+                    return Err(corrupt(
+                        "a stage record carries a model confidence outside \
+                             the range from 0 to 1"
+                            .to_string(),
+                    ))
+                }
+            },
+        };
+        let model_score = match map["model_score"] {
+            Value::Null => None,
+            value => match model_number_unit(value) {
+                Some(number) => Some(number),
+                None => {
+                    return Err(corrupt(
+                        "a stage record carries a model score outside the \
+                             range from 0 to 1"
+                            .to_string(),
+                    ))
+                }
+            },
+        };
+        let fallback_taken = match map["fallback_taken"] {
+            Value::Null => None,
+            Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
+            _ => {
+                return Err(corrupt(
+                    "a stage record carries a fallback outside the recorded \
+                         classes"
+                        .to_string(),
+                ))
+            }
+        };
+        let verdict_pattern = model_name.is_some()
+            && model_verdict.is_some()
+            && model_confidence.is_some()
+            && model_score.is_some()
+            && fallback_taken.is_none();
+        let fallback_pattern = model_name.is_some()
+            && fallback_taken.is_some()
+            && model_verdict.is_none()
+            && model_confidence.is_none()
+            && model_score.is_none();
+        let null_pattern = model_name.is_none()
+            && model_verdict.is_none()
+            && model_confidence.is_none()
+            && model_score.is_none()
+            && fallback_taken.is_none();
+        if !verdict_pattern && !fallback_pattern && !null_pattern {
+            return Err(corrupt(
+                "a stage record carries its model fields in no recorded pattern".to_string(),
+            ));
+        }
+        (
+            model_name,
+            model_verdict,
+            model_confidence,
+            model_score,
+            fallback_taken,
+        )
+    } else {
+        for field in RESERVED_FIELDS {
+            if !matches!(map[field], Value::Null) {
+                return Err(corrupt(format!(
+                    "a log record carries a value in the reserved field {field}"
                 )));
             }
-            let model_name = match map["model_name"] {
-                Value::Null => None,
-                Value::Str(text) if model_name_shape_ok(text) => Some(text.clone()),
-                _ => {
-                    return Err(corrupt(
-                        "a stage record carries a model name outside the recorded \
-                         shape"
-                            .to_string(),
-                    ))
-                }
-            };
-            let model_verdict = match map["model_verdict"] {
-                Value::Null => None,
-                Value::Str(text) if VERDICT_LABELS.contains(&text.as_str()) => {
-                    Some(text.clone())
-                }
-                _ => {
-                    return Err(corrupt(
-                        "a stage record carries a model verdict outside the \
-                         recorded names"
-                            .to_string(),
-                    ))
-                }
-            };
-            let model_confidence = match map["model_confidence"] {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model confidence outside \
-                             the range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
-            let model_score = match map["model_score"] {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model score outside the \
-                             range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
-            let fallback_taken = match map["fallback_taken"] {
-                Value::Null => None,
-                Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => {
-                    Some(text.clone())
-                }
-                _ => {
-                    return Err(corrupt(
-                        "a stage record carries a fallback outside the recorded \
-                         classes"
-                            .to_string(),
-                    ))
-                }
-            };
-            let verdict_pattern = model_name.is_some()
-                && model_verdict.is_some()
-                && model_confidence.is_some()
-                && model_score.is_some()
-                && fallback_taken.is_none();
-            let fallback_pattern = model_name.is_some()
-                && fallback_taken.is_some()
-                && model_verdict.is_none()
-                && model_confidence.is_none()
-                && model_score.is_none();
-            let null_pattern = model_name.is_none()
-                && model_verdict.is_none()
-                && model_confidence.is_none()
-                && model_score.is_none()
-                && fallback_taken.is_none();
-            if !verdict_pattern && !fallback_pattern && !null_pattern {
-                return Err(corrupt(
-                    "a stage record carries its model fields in no recorded pattern"
-                        .to_string(),
-                ));
-            }
-            (
-                model_name,
-                model_verdict,
-                model_confidence,
-                model_score,
-                fallback_taken,
-            )
-        } else {
-            for field in RESERVED_FIELDS {
-                if !matches!(map[field], Value::Null) {
-                    return Err(corrupt(format!(
-                        "a log record carries a value in the reserved field {field}"
-                    )));
-                }
-            }
-            (None, None, None, None, None)
-        };
+        }
+        (None, None, None, None, None)
+    };
     if matches!(kind.as_str(), "registered" | "proof" | "spend") && !reasons.is_empty() {
         return Err(corrupt(format!("a {kind} record names reasons")));
     }
@@ -2387,7 +2383,7 @@ fn validate_stage_record_against_warrant(
         match pattern {
             ModelPattern::Null => {}
             ModelPattern::Verdict
-                if matches!(previous_index, 1 | 2 | 3)
+                if matches!(previous_index, 1..=3)
                     && record.model_verdict.as_deref() == Some("de-escalate")
                     && record
                         .model_confidence
@@ -2434,7 +2430,7 @@ fn validate_stage_record_against_warrant(
                         .is_some_and(|confidence| confidence >= ESCALATION_BAR)
                     && new_index == previous_index + 1
                     && possible.contains(&previous_index)
-                    && matches!(previous_index, 1 | 2 | 3)
+                    && matches!(previous_index, 1..=3)
                     && new_index <= stage_index("cut budget");
                 if !endorsed {
                     return Err(corrupt(format!(
@@ -2698,10 +2694,7 @@ fn document_to_value(document: &Document) -> Value {
                         ),
                         (
                             "model_name".to_string(),
-                            record
-                                .model_name
-                                .clone()
-                                .map_or(Value::Null, Value::Str),
+                            record.model_name.clone().map_or(Value::Null, Value::Str),
                         ),
                         (
                             "model_confidence".to_string(),
@@ -2723,10 +2716,7 @@ fn document_to_value(document: &Document) -> Value {
                     if record.kind == "stage" && record.model_name.is_some() {
                         pairs.push((
                             "model_verdict".to_string(),
-                            record
-                                .model_verdict
-                                .clone()
-                                .map_or(Value::Null, Value::Str),
+                            record.model_verdict.clone().map_or(Value::Null, Value::Str),
                         ));
                         pairs.push((
                             "model_score".to_string(),
@@ -3130,6 +3120,7 @@ fn consultation_fields(outcome: Consultation, pinned: &str) -> ConsultationField
             confidence,
             score,
         } if model_name_shape_ok(&model_name)
+            && model_name == pinned
             && (0.0..=1.0).contains(&confidence)
             && (0.0..=1.0).contains(&score) =>
         {
@@ -3141,7 +3132,9 @@ fn consultation_fields(outcome: Consultation, pinned: &str) -> ConsultationField
                 fallback_taken: None,
             }
         }
-        Consultation::Abstention { model_name } if model_name_shape_ok(&model_name) => {
+        Consultation::Abstention { model_name }
+            if model_name_shape_ok(&model_name) && model_name == pinned =>
+        {
             fallback("abstention", &model_name)
         }
         Consultation::CallFailed => fallback("call failed", pinned),
@@ -3429,7 +3422,31 @@ fn extract_reply(body: &str, pinned: &str) -> Consultation {
         None => return Consultation::MalformedReply,
     };
     let verdict = match choice.get("label") {
-        Some(Value::Null) => return Consultation::Abstention { model_name },
+        Some(Value::Null) => {
+            // An abstention is a well formed reply that
+            // reports no decision under DM-16, so a confidence
+            // or a score standing outside its declared range
+            // makes the reply malformed even here, where no
+            // verdict stands to carry them.
+            if let Some(value) = choice.get("confidence") {
+                if model_number_unit(value).is_none() {
+                    return Consultation::MalformedReply;
+                }
+            }
+            if let Some(value) = map.get("score") {
+                let level_ok = match object_map(value) {
+                    Some(score_map) => matches!(
+                        score_map.get("level"),
+                        Some(Value::Int(level)) if (1..=10).contains(level)
+                    ),
+                    None => false,
+                };
+                if !level_ok {
+                    return Consultation::MalformedReply;
+                }
+            }
+            return Consultation::Abstention { model_name };
+        }
         Some(Value::Str(text)) => match Verdict::from_label(text) {
             Some(verdict) => verdict,
             None => return Consultation::MalformedReply,
@@ -3502,6 +3519,14 @@ impl SubprocessTransport {
     }
 
     fn run_helper(&self, payload_path: &PathBuf) -> Consultation {
+        // The deadline is computed before any process or
+        // thread stands, with a checked addition, so a timeout
+        // too wide to add to the current instant fails the call
+        // here and leaves nothing running and nothing to reap,
+        // and the caller still removes the payload file.
+        let Some(deadline) = std::time::Instant::now().checked_add(self.timeout) else {
+            return Consultation::CallFailed;
+        };
         let mut command = std::process::Command::new(&self.program);
         command
             .args(&self.args)
@@ -3518,7 +3543,10 @@ impl SubprocessTransport {
         // The reply is drained on its own thread so a helper
         // that writes more than a pipe holds cannot wedge the
         // deadline loop, and only the bounded head is kept.
-        let reader = std::thread::spawn(move || {
+        // The drained reply reaches this thread over a channel,
+        // because the wait for it must stand bounded below.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
             use std::io::Read;
             let mut stored: Vec<u8> = Vec::new();
             let mut total: usize = 0;
@@ -3536,9 +3564,8 @@ impl SubprocessTransport {
                     Err(_) => break,
                 }
             }
-            (stored, total)
+            let _ = sender.send((stored, total));
         });
-        let deadline = std::time::Instant::now() + self.timeout;
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Some(status),
@@ -3553,7 +3580,21 @@ impl SubprocessTransport {
                 Err(_) => break None,
             }
         };
-        let (body, total) = reader.join().unwrap_or_default();
+        // The reader finishes at the end of the pipe, and the
+        // pipe reaches its end only when every process holding
+        // it closes it. A child of the helper can hold the pipe
+        // open past the helper's own exit and past its kill, as
+        // the subprocess lifecycle probe in CONTRACT.md
+        // records, so an unbounded wait here would let the
+        // consultation run past the deadline DM-20 bounds it
+        // by, inside the exclusive lock of DM-10. The wait
+        // stands bounded by a short grace, and a reader that
+        // has not finished inside it fails the call, with its
+        // thread left to end when the pipe finally closes.
+        let (body, total) = match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(reply) => reply,
+            Err(_) => return Consultation::CallFailed,
+        };
         let status = match status {
             Some(status) => status,
             None => return Consultation::CallFailed,
@@ -3593,8 +3634,7 @@ impl ModelTransport for SubprocessTransport {
     }
 }
 
-static PAYLOAD_COUNTER: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static PAYLOAD_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Write the call payload to a temporary file created
 /// exclusively, in the directory the process environment
@@ -3617,7 +3657,11 @@ fn write_payload_temp(payload: &str) -> std::io::Result<PathBuf> {
         ));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut handle) => {
-                handle.write_all(payload.as_bytes())?;
+                if let Err(err) = handle.write_all(payload.as_bytes()) {
+                    drop(handle);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(err);
+                }
                 return Ok(path);
             }
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -4088,8 +4132,7 @@ impl Switch {
     ) -> Result<StageReport> {
         if host_context.is_some() && transport.is_none() {
             return Err(Error::InvalidRequest(
-                "a host context stands supplied with no model transport to carry it"
-                    .to_string(),
+                "a host context stands supplied with no model transport to carry it".to_string(),
             ));
         }
         if let Some(context) = host_context {
@@ -4100,7 +4143,11 @@ impl Switch {
                 )));
             }
         }
-        self.evaluate(run_id, now, transport.map(|carrier| (carrier, host_context)))
+        self.evaluate(
+            run_id,
+            now,
+            transport.map(|carrier| (carrier, host_context)),
+        )
     }
 
     /// The shared evaluation path of the two entry points, so
@@ -4142,9 +4189,8 @@ impl Switch {
         // at 1 and the instant fresh, because the fall decision
         // seat stands closed to a stale evaluation under DM-19.
         // No other evaluation consults the model.
-        let streak_at_one =
-            document.runs[index].clear_streak.cmp_i128(1) == Ordering::Equal;
-        let middle = matches!(recorded, 1 | 2 | 3);
+        let streak_at_one = document.runs[index].clear_streak.cmp_i128(1) == Ordering::Equal;
+        let middle = matches!(recorded, 1..=3);
         let seat = if model.is_some() && middle && warranted == recorded {
             Some(Seat::Held)
         } else if model.is_some() && middle && warranted < recorded && streak_at_one && !stale {
