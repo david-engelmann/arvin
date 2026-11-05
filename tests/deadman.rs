@@ -2585,6 +2585,46 @@ fn fall_seat_fallback_spends_the_streak_and_a_fall_re_earns() {
 }
 
 #[test]
+fn fall_seat_call_failure_holds_and_spends_the_streak() {
+    let dir = TestDir::new("model-fall-call-failure-spend");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let transport = fixture_transport(vec![Consultation::CallFailed]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert_eq!(transport.shown().len(), 1);
+    let record = last_record(&switch);
+    assert_eq!(record.stage, "throttle");
+    assert_eq!(record.fallback_taken.as_deref(), Some("call failed"));
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    assert_eq!(record.model_verdict, None);
+    assert_eq!(record.model_confidence, None);
+    assert_eq!(record.model_score, None);
+    assert!(state_text(&dir).contains("\"clear_streak\": 0"));
+}
+
+#[test]
+fn fall_seat_malformed_reply_holds_and_spends_the_streak() {
+    let dir = TestDir::new("model-fall-malformed-spend");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let transport = fixture_transport(vec![Consultation::MalformedReply]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert_eq!(transport.shown().len(), 1);
+    let record = last_record(&switch);
+    assert_eq!(record.stage, "throttle");
+    assert_eq!(record.fallback_taken.as_deref(), Some("malformed reply"));
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    assert_eq!(record.model_verdict, None);
+    assert_eq!(record.model_confidence, None);
+    assert_eq!(record.model_score, None);
+    assert!(state_text(&dir).contains("\"clear_streak\": 0"));
+}
+
+#[test]
 fn abstention_holds_at_both_seats_and_at_cut_tools() {
     // The held seat at warn.
     let dir = TestDir::new("model-abstain-warn");
@@ -2870,6 +2910,88 @@ fn the_vignette_at_the_fall_seat_with_a_host_context() {
     assert_eq!(shown[0], expected);
     // The context is never written into the state document.
     assert!(!state_text(&dir).contains("Planned build window"));
+}
+
+#[test]
+fn the_vignette_renders_a_standing_hard_ceiling_byte_for_byte() {
+    let dir = TestDir::new("model-vignette-hard-ceiling");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 60, 5, None, Some(1000));
+    switch.spend(&text("run-a"), &int(40), &at(5)).unwrap();
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(121))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(122)).unwrap();
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    let shown = transport.shown();
+    assert_eq!(shown.len(), 1);
+    let expected = format!(
+        "{EXPECTED_PREAMBLE}\n\nThe state of the run at this evaluation stands as follows.\n{}",
+        [
+            "The run stands at stage throttle.",
+            "The triggers at this instant warrant stage none.",
+            "No trigger stands live at this instant.",
+            "The missed proof count stands at 0 and the missed proof limit stands at 5 and the proof interval stands at 60 seconds.",
+            "The last proof stands at an age of 2 whole seconds.",
+            "The accumulated spend stands at 40.",
+            "No soft ceiling stands.",
+            "The hard ceiling stands at 1000 and the spend stands below it by 960.",
+            "The standing clear streak stands at 1.",
+            "The last stage records in sequence order stand as follows.",
+            "A stage record at stage throttle naming missed proofs stands at an age of 2 whole seconds.",
+            "Since the run entered stage throttle it has recorded 1 proof record and 0 spend records.",
+            "No proof note stands recorded in the decision log.",
+        ]
+        .join("\n")
+    );
+    assert_eq!(shown[0], expected);
+}
+
+#[test]
+fn the_vignette_renders_only_the_last_five_stage_records() {
+    let dir = TestDir::new("model-vignette-last-five");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(61)).unwrap();
+    switch.stage(&text("run-a"), &at(62)).unwrap();
+    switch.stage(&text("run-a"), &at(63)).unwrap();
+    switch.stage(&text("run-a"), &at(64)).unwrap();
+    switch.stage(&text("run-a"), &at(65)).unwrap();
+    switch.stage(&text("run-a"), &at(66)).unwrap();
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(67), Some(&transport), None)
+        .unwrap();
+    let shown = transport.shown();
+    assert_eq!(shown.len(), 1);
+    let expected = format!(
+        "{EXPECTED_PREAMBLE}\n\nThe state of the run at this evaluation stands as follows.\n{}",
+        [
+            "The run stands at stage warn.",
+            "The triggers at this instant warrant stage warn.",
+            "The live reasons are missed proofs.",
+            "The missed proof count stands at 1 and the missed proof limit stands at 5 and the proof interval stands at 60 seconds.",
+            "No proof stands, and the registration stands at an age of 67 whole seconds.",
+            "The accumulated spend stands at 0.",
+            "No soft ceiling stands.",
+            "No hard ceiling stands.",
+            "The standing clear streak stands at 0.",
+            "The last stage records in sequence order stand as follows.",
+            "A stage record at stage warn naming missed proofs stands at an age of 5 whole seconds.",
+            "A stage record at stage warn naming missed proofs stands at an age of 4 whole seconds.",
+            "A stage record at stage warn naming missed proofs stands at an age of 3 whole seconds.",
+            "A stage record at stage warn naming missed proofs stands at an age of 2 whole seconds.",
+            "A stage record at stage warn naming missed proofs stands at an age of 1 whole seconds.",
+            "Since the run entered stage warn it has recorded 0 proof records and 0 spend records.",
+            "No proof note stands recorded in the decision log.",
+        ]
+        .join("\n")
+    );
+    assert_eq!(shown[0], expected);
 }
 
 #[test]
