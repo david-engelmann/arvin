@@ -7,8 +7,13 @@
 //! compares its decision log and its stage at the recorded
 //! probe instant against the record, replays every production
 //! operation under Rust and compares the written state byte for
-//! byte, and continues three fixtures under Rust against the
-//! continuation files the Python implementation produced.
+//! byte, and continues three fixtures under Rust and compares
+//! the resulting log against the continuation files the Python
+//! implementation produced. The continuation comparison stood
+//! on bytes until the Round 3 amendment retired the byte form
+//! by name, as its text states, and the form here is the
+//! reading half that amendment keeps, the documents operating
+//! to the recorded log under the extended reader.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -407,7 +412,7 @@ fn fixture_productions_replay_byte_for_byte() {
 }
 
 #[test]
-fn fixture_continuations_match_byte_for_byte() {
+fn fixture_continuations_operate_to_the_recorded_log() {
     // The warn fixture continued: a proof and two evaluations
     // walk the run back down through the hysteresis.
     let dir = TestDir::new("continue-warn");
@@ -417,20 +422,18 @@ fn fixture_continuations_match_byte_for_byte() {
         .unwrap();
     switch.stage(&text("run-a"), &at(61)).unwrap();
     switch.stage(&text("run-a"), &at(61)).unwrap();
-    assert_eq!(
-        std::fs::read(dir.path().join("state.json")).unwrap(),
-        fixture_bytes("continued-warn.json")
-    );
+    let expected_dir = TestDir::new("continue-warn-expected");
+    let expected = fixture_copy(&expected_dir, "continued-warn.json");
+    assert_eq!(log_lines(&switch, "run-a"), log_lines(&expected, "run-a"));
     // The mid ladder fixture continued: a spend to the soft
     // ceiling and an evaluation.
     let dir = TestDir::new("continue-mid-ladder");
     let switch = fixture_copy(&dir, "mid-ladder.json");
     switch.spend(&text("run-a"), &int(60), &at(122)).unwrap();
     switch.stage(&text("run-a"), &at(123)).unwrap();
-    assert_eq!(
-        std::fs::read(dir.path().join("state.json")).unwrap(),
-        fixture_bytes("continued-mid-ladder.json")
-    );
+    let expected_dir = TestDir::new("continue-mid-ladder-expected");
+    let expected = fixture_copy(&expected_dir, "continued-mid-ladder.json");
+    assert_eq!(log_lines(&switch, "run-a"), log_lines(&expected, "run-a"));
     // The killed fixture continued: no operation records on the
     // closed run.
     let dir = TestDir::new("continue-killed");
@@ -439,10 +442,9 @@ fn fixture_continuations_match_byte_for_byte() {
     switch
         .prove(&text("run-a"), &text("late proof"), &at(4))
         .unwrap();
-    assert_eq!(
-        std::fs::read(dir.path().join("state.json")).unwrap(),
-        fixture_bytes("continued-killed.json")
-    );
+    let expected_dir = TestDir::new("continue-killed-expected");
+    let expected = fixture_copy(&expected_dir, "continued-killed.json");
+    assert_eq!(log_lines(&switch, "run-a"), log_lines(&expected, "run-a"));
 }
 
 #[test]

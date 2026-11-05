@@ -13,9 +13,13 @@
 //!
 //! Time is an input. Every operation but the log read takes the
 //! current instant as an argument, and this module reads no wall
-//! clock and calls no model. The one random draw in the module
-//! names a temporary file at publication, and it reaches no
-//! stage, no reason, no record, and no state byte. The stage an
+//! clock. The deterministic operations call no model, and the one
+//! model entry point calls only the transport the caller supplies.
+//! The random draws in the module
+//! name temporary files, the file a publication writes before
+//! its rename and the payload file a subprocess consultation
+//! writes before its helper runs, and no draw reaches a
+//! stage, a reason, a record, or a state byte. The stage an
 //! evaluation reports is a deterministic function of the recorded
 //! state and the instant.
 //!
@@ -97,6 +101,45 @@ const RECORD_KEYS: [&str; 8] = [
     "model_confidence",
     "fallback_taken",
 ];
+const RECORD_KEYS_EXTENDED: [&str; 10] = [
+    "seq",
+    "kind",
+    "at",
+    "stage",
+    "reasons",
+    "model_name",
+    "model_confidence",
+    "fallback_taken",
+    "model_verdict",
+    "model_score",
+];
+
+/// The model the escalation slice stands pinned to, named by
+/// the roadmap and reached only through a caller supplied
+/// transport under DM-20.
+pub const MODEL_NAME: &str = "jev-1.13.0";
+
+/// The confidence bars of the combination rule in DM-15. The
+/// bars are constants of the library, named in the contract,
+/// and stand in no stored field and no caller input, and the
+/// de-escalation bar stands above the escalation bar.
+pub const ESCALATION_BAR: f64 = 0.60;
+pub const DE_ESCALATION_BAR: f64 = 0.85;
+
+/// The widest model name a record can carry under DM-17.
+pub const MODEL_NAME_MAX: usize = 128;
+
+/// The longest host context the model entry point accepts
+/// under DM-14, counted in characters.
+pub const HOST_CONTEXT_MAX: usize = 2000;
+
+/// The verdict labels of DM-17, in the order the doctrine
+/// names them.
+const VERDICT_LABELS: [&str; 3] = ["hold", "escalate", "de-escalate"];
+
+/// The fallback classes of DM-16, a closed vocabulary the
+/// record carries and the reader validates.
+const FALLBACK_CLASSES: [&str; 4] = ["abstention", "call failed", "silence", "malformed reply"];
 
 /// The digit limit the Python int conversion and the Python json
 /// reader apply to an integer literal, probed against the Python
@@ -1609,9 +1652,11 @@ pub fn validate_note(value: &Value) -> Result<()> {
 // ----------------------------------------------------------------
 // The typed document and its strict validation.
 
-/// One decision log record. The reserved model fields stand null
-/// in every record of this slice and are carried by the writer,
-/// so the typed form holds only the fields that can stand.
+/// One decision log record. The three reserved model fields
+/// stand in every record, and the two sibling fields of DM-17
+/// stand only in the extended shape of a stage record that
+/// carries a consultation, so the typed form holds all five
+/// and the writer chooses the shape by the record it writes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub seq: u64,
@@ -1619,6 +1664,55 @@ pub struct Record {
     pub at: String,
     pub stage: String,
     pub reasons: Vec<String>,
+    pub model_name: Option<String>,
+    pub model_verdict: Option<String>,
+    pub model_confidence: Option<f64>,
+    pub model_score: Option<f64>,
+    pub fallback_taken: Option<String>,
+}
+
+/// Which of the three patterns of DM-17 the model fields of a
+/// record stand in. The reader refuses any other population
+/// before a record of that shape can stand in a typed log, so
+/// the classification of a validated record is total.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModelPattern {
+    /// All five model fields stand null or absent.
+    Null,
+    /// A verdict stands recorded with its confidence and score.
+    Verdict,
+    /// A fallback class stands recorded and no verdict stands.
+    Fallback,
+}
+
+fn model_pattern(record: &Record) -> ModelPattern {
+    if record.fallback_taken.is_some() {
+        ModelPattern::Fallback
+    } else if record.model_verdict.is_some() {
+        ModelPattern::Verdict
+    } else {
+        ModelPattern::Null
+    }
+}
+
+/// Whether a model name stands in the shape DM-17 records, a
+/// nonempty string of at most MODEL_NAME_MAX characters.
+fn model_name_shape_ok(text: &str) -> bool {
+    !text.is_empty() && text.chars().count() <= MODEL_NAME_MAX
+}
+
+/// A JSON number standing in the unit interval of DM-17, read
+/// as the f64 the typed record carries. An integer stands as
+/// its value, and a float stands where the range holds it, and
+/// NaN stands nowhere because no comparison admits it.
+fn model_number_unit(value: &Value) -> Option<f64> {
+    match value {
+        Value::Int(number) if (0..=1).contains(number) => Some(*number as f64),
+        Value::BigInt(text) if text == "0" => Some(0.0),
+        Value::BigInt(text) if text == "1" => Some(1.0),
+        Value::Float(number) if (0.0..=1.0).contains(number) => Some(*number),
+        _ => None,
+    }
 }
 
 struct Run {
@@ -1662,13 +1756,24 @@ fn keys_match(map: &std::collections::HashMap<&str, &Value>, expected: &[&str]) 
 
 fn validate_record(value: &Value, position: usize) -> Result<Record> {
     let map = match object_map(value) {
-        Some(map) if keys_match(&map, &RECORD_KEYS) => map,
-        _ => {
+        Some(map) => map,
+        None => {
             return Err(corrupt(
                 "a log record does not carry exactly the recorded fields".to_string(),
             ))
         }
     };
+    // A record stands in the landed eight key shape or, for a
+    // stage record carrying a consultation under DM-17, in the
+    // extended ten key shape, and in no other shape. The kind
+    // is read before the shape is judged because the extended
+    // shape stands open to stage records alone.
+    let extended = keys_match(&map, &RECORD_KEYS_EXTENDED);
+    if !extended && !keys_match(&map, &RECORD_KEYS) {
+        return Err(corrupt(
+            "a log record does not carry exactly the recorded fields".to_string(),
+        ));
+    }
     let seq = map["seq"];
     match seq.as_json_int() {
         Some(number) if number.cmp_i128(position as i128 + 1) == Ordering::Equal => {}
@@ -1730,13 +1835,109 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             return Err(corrupt("a log record names one reason twice".to_string()));
         }
     }
-    for field in RESERVED_FIELDS {
-        if !matches!(map[field], Value::Null) {
+    let (model_name, model_verdict, model_confidence, model_score, fallback_taken) = if extended {
+        if kind != "stage" {
             return Err(corrupt(format!(
-                "a log record carries a value in the reserved field {field}"
+                "a {kind} record carries the extended model fields, which \
+                     stand only on a stage record"
             )));
         }
-    }
+        let model_name = match map["model_name"] {
+            Value::Null => None,
+            Value::Str(text) if model_name_shape_ok(text) => Some(text.clone()),
+            _ => {
+                return Err(corrupt(
+                    "a stage record carries a model name outside the recorded \
+                         shape"
+                        .to_string(),
+                ))
+            }
+        };
+        let model_verdict = match map["model_verdict"] {
+            Value::Null => None,
+            Value::Str(text) if VERDICT_LABELS.contains(&text.as_str()) => Some(text.clone()),
+            _ => {
+                return Err(corrupt(
+                    "a stage record carries a model verdict outside the \
+                         recorded names"
+                        .to_string(),
+                ))
+            }
+        };
+        let model_confidence = match map["model_confidence"] {
+            Value::Null => None,
+            value => match model_number_unit(value) {
+                Some(number) => Some(number),
+                None => {
+                    return Err(corrupt(
+                        "a stage record carries a model confidence outside \
+                             the range from 0 to 1"
+                            .to_string(),
+                    ))
+                }
+            },
+        };
+        let model_score = match map["model_score"] {
+            Value::Null => None,
+            value => match model_number_unit(value) {
+                Some(number) => Some(number),
+                None => {
+                    return Err(corrupt(
+                        "a stage record carries a model score outside the \
+                             range from 0 to 1"
+                            .to_string(),
+                    ))
+                }
+            },
+        };
+        let fallback_taken = match map["fallback_taken"] {
+            Value::Null => None,
+            Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
+            _ => {
+                return Err(corrupt(
+                    "a stage record carries a fallback outside the recorded \
+                         classes"
+                        .to_string(),
+                ))
+            }
+        };
+        let verdict_pattern = model_name.is_some()
+            && model_verdict.is_some()
+            && model_confidence.is_some()
+            && model_score.is_some()
+            && fallback_taken.is_none();
+        let fallback_pattern = model_name.is_some()
+            && fallback_taken.is_some()
+            && model_verdict.is_none()
+            && model_confidence.is_none()
+            && model_score.is_none();
+        let null_pattern = model_name.is_none()
+            && model_verdict.is_none()
+            && model_confidence.is_none()
+            && model_score.is_none()
+            && fallback_taken.is_none();
+        if !verdict_pattern && !fallback_pattern && !null_pattern {
+            return Err(corrupt(
+                "a stage record carries its model fields in no recorded pattern".to_string(),
+            ));
+        }
+        (
+            model_name,
+            model_verdict,
+            model_confidence,
+            model_score,
+            fallback_taken,
+        )
+    } else {
+        for field in RESERVED_FIELDS {
+            if !matches!(map[field], Value::Null) {
+                return Err(corrupt(format!(
+                    "a log record carries a value in the reserved field {field}"
+                )));
+            }
+        }
+        (None, None, None, None, None)
+    };
     if matches!(kind.as_str(), "registered" | "proof" | "spend") && !reasons.is_empty() {
         return Err(corrupt(format!("a {kind} record names reasons")));
     }
@@ -1756,6 +1957,11 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
         at,
         stage,
         reasons,
+        model_name,
+        model_verdict,
+        model_confidence,
+        model_score,
+        fallback_taken,
     })
 }
 
@@ -1841,6 +2047,10 @@ fn validate_history_against_standing(
     let registered_instant = parse_instant(registered_at).expect("a validated instant parses");
     let mut live_proof_latest: Option<Instant> = None;
     let mut live_proof_latest_text: Option<String> = None;
+    // The instant of the latest stage record in sequence
+    // order, one term of the reference instant DM-19 defines,
+    // tracked for the step down floor the join now imposes.
+    let mut last_stage_instant: Option<Instant> = None;
     for (position, record) in log.iter().enumerate() {
         if position > 0 && record.kind == "registered" {
             return Err(corrupt(format!(
@@ -1880,6 +2090,20 @@ fn validate_history_against_standing(
                 }
             }
             "stage" => {
+                // The reference instant the records before this
+                // one establish, against which DM-19 floors a
+                // step down record.
+                let mut reference_floor = registered_instant;
+                if let Some(latest) = live_proof_latest {
+                    if latest > reference_floor {
+                        reference_floor = latest;
+                    }
+                }
+                if let Some(latest) = last_stage_instant {
+                    if latest > reference_floor {
+                        reference_floor = latest;
+                    }
+                }
                 validate_stage_record_against_warrant(
                     id_repr,
                     record,
@@ -1893,7 +2117,10 @@ fn validate_history_against_standing(
                     hard_ceiling,
                     proof_interval_seconds,
                     missed_proof_limit,
+                    &reference_floor,
                 )?;
+                last_stage_instant =
+                    Some(parse_instant(&record.at).expect("a validated instant parses"));
             }
             _ => {}
         }
@@ -1981,6 +2208,7 @@ fn validate_stage_record_against_warrant(
     hard_ceiling: Option<i64>,
     proof_interval_seconds: &JsonInt,
     missed_proof_limit: i64,
+    reference_floor: &Instant,
 ) -> Result<()> {
     let previous_index = stage_index(previous_stage);
     let new_index = stage_index(&record.stage);
@@ -2127,7 +2355,22 @@ fn validate_stage_record_against_warrant(
         .iter()
         .map(|warrant| missed_index.max(*warrant))
         .collect();
+    // The model judgments of DM-18 stand on the pattern the
+    // record carries, and the floor of DM-19 stands on every
+    // step down. A record with null model fields is judged
+    // exactly as the join judged it before the Round 3
+    // amendment in every particular but the floor, which the
+    // amendment adds for step down records alone.
+    let pattern = model_pattern(record);
     if steps_down {
+        if record_instant < *reference_floor {
+            return Err(corrupt(format!(
+                "a stage record in the log of run {id_repr} steps down from \
+                 {previous_stage} to {} at an instant below the reference \
+                 instant its preceding records establish",
+                record.stage
+            )));
+        }
         let lowest = possible.iter().min().copied().unwrap_or(missed_index);
         if lowest >= previous_index {
             return Err(corrupt(format!(
@@ -2137,12 +2380,68 @@ fn validate_stage_record_against_warrant(
                 record.stage
             )));
         }
-    } else if !possible.contains(&new_index) {
-        return Err(corrupt(format!(
-            "a stage record in the log of run {id_repr} stands at stage {}, \
-             a stage the triggers at its instant cannot warrant for this run",
-            record.stage
-        )));
+        match pattern {
+            ModelPattern::Null => {}
+            ModelPattern::Verdict
+                if matches!(previous_index, 1..=3)
+                    && record.model_verdict.as_deref() == Some("de-escalate")
+                    && record
+                        .model_confidence
+                        .is_some_and(|confidence| confidence >= DE_ESCALATION_BAR) => {}
+            _ => {
+                return Err(corrupt(format!(
+                    "a stage record in the log of run {id_repr} steps down from \
+                     {previous_stage} to {} carrying model fields no endorsed \
+                     step down of DM-15 carries",
+                    record.stage
+                )))
+            }
+        }
+    } else {
+        match pattern {
+            ModelPattern::Null => {
+                if !possible.contains(&new_index) {
+                    return Err(corrupt(format!(
+                        "a stage record in the log of run {id_repr} stands at stage {}, \
+                         a stage the triggers at its instant cannot warrant for this run",
+                        record.stage
+                    )));
+                }
+            }
+            _ if holds => {
+                // A hold record carrying a model pattern is
+                // judged for field coherence and stage
+                // succession only, as DM-18 states, and both
+                // stand judged already.
+            }
+            _ => {
+                // A rise carrying a model pattern stands only
+                // as the model rise of DM-18. The standing stage
+                // stands among the stages the triggers can
+                // warrant, as the seat of DM-13 requires, the
+                // rise is exactly one step from a middle stage,
+                // it lands no higher than cut budget so no model
+                // path reaches kill, and it carries an escalate
+                // verdict at or above the escalation bar.
+                let endorsed = pattern == ModelPattern::Verdict
+                    && record.model_verdict.as_deref() == Some("escalate")
+                    && record
+                        .model_confidence
+                        .is_some_and(|confidence| confidence >= ESCALATION_BAR)
+                    && new_index == previous_index + 1
+                    && possible.contains(&previous_index)
+                    && matches!(previous_index, 1..=3)
+                    && new_index <= stage_index("cut budget");
+                if !endorsed {
+                    return Err(corrupt(format!(
+                        "a stage record in the log of run {id_repr} stands at \
+                         stage {} carrying model fields no consultation of \
+                         DM-13 stands behind",
+                        record.stage
+                    )));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -2378,7 +2677,7 @@ fn document_to_value(document: &Document) -> Value {
                 .log
                 .iter()
                 .map(|record| {
-                    Value::Object(vec![
+                    let mut pairs: Vec<(String, Value)> = vec![
                         ("seq".to_string(), Value::Int(record.seq as i128)),
                         ("kind".to_string(), Value::Str(record.kind.clone())),
                         ("at".to_string(), Value::Str(record.at.clone())),
@@ -2393,10 +2692,38 @@ fn document_to_value(document: &Document) -> Value {
                                     .collect(),
                             ),
                         ),
-                        ("model_name".to_string(), Value::Null),
-                        ("model_confidence".to_string(), Value::Null),
-                        ("fallback_taken".to_string(), Value::Null),
-                    ])
+                        (
+                            "model_name".to_string(),
+                            record.model_name.clone().map_or(Value::Null, Value::Str),
+                        ),
+                        (
+                            "model_confidence".to_string(),
+                            record.model_confidence.map_or(Value::Null, Value::Float),
+                        ),
+                        (
+                            "fallback_taken".to_string(),
+                            record
+                                .fallback_taken
+                                .clone()
+                                .map_or(Value::Null, Value::Str),
+                        ),
+                    ];
+                    // The extended shape of DM-17 stands only on
+                    // a stage record that carries a consultation,
+                    // judged by any of its five model fields
+                    // standing populated, because a consultation
+                    // record always carries its model name.
+                    if record.kind == "stage" && record.model_name.is_some() {
+                        pairs.push((
+                            "model_verdict".to_string(),
+                            record.model_verdict.clone().map_or(Value::Null, Value::Str),
+                        ));
+                        pairs.push((
+                            "model_score".to_string(),
+                            record.model_score.map_or(Value::Null, Value::Float),
+                        ));
+                    }
+                    Value::Object(pairs)
                 })
                 .collect();
             Value::Object(vec![
@@ -2616,6 +2943,738 @@ fn warrant(run: &Run, now: &Instant) -> Result<(usize, Vec<&'static str>)> {
         }
     }
     Ok((index, reasons))
+}
+
+/// Which seat of DM-13 an evaluation stands at, where a seat
+/// stands open at all.
+enum Seat {
+    /// The warranted stage stands equal to the recorded stage.
+    Held,
+    /// The warranted stage stands below the recorded stage and
+    /// the standing clear streak stands at 1.
+    Fall,
+}
+
+/// The reference instant of DM-19, the latest of the
+/// registration instant and the standing last proof instant
+/// where one stands and the instant of the latest stage
+/// record in sequence order where one stands, each taken from
+/// the run as recorded.
+fn reference_instant(run: &Run) -> Instant {
+    let mut reference = parse_instant(&run.registered_at).expect("a validated instant parses");
+    if let Some(text) = &run.last_proof_at {
+        let proof = parse_instant(text).expect("a validated instant parses");
+        if proof > reference {
+            reference = proof;
+        }
+    }
+    for record in run.log.iter().rev() {
+        if record.kind == "stage" {
+            let stage_at = parse_instant(&record.at).expect("a validated instant parses");
+            if stage_at > reference {
+                reference = stage_at;
+            }
+            break;
+        }
+    }
+    reference
+}
+
+/// A verdict of the decision model, one of the three labels
+/// of DM-17.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Hold,
+    Escalate,
+    DeEscalate,
+}
+
+impl Verdict {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Verdict::Hold => "hold",
+            Verdict::Escalate => "escalate",
+            Verdict::DeEscalate => "de-escalate",
+        }
+    }
+
+    fn from_label(text: &str) -> Option<Verdict> {
+        match text {
+            "hold" => Some(Verdict::Hold),
+            "escalate" => Some(Verdict::Escalate),
+            "de-escalate" => Some(Verdict::DeEscalate),
+            _ => None,
+        }
+    }
+}
+
+/// The outcome of one consultation, a verdict or one of the
+/// fallback classes of DM-16 in typed form. A transport
+/// returns this and judges nothing beyond the parsing its own
+/// shape states.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Consultation {
+    Verdict {
+        model_name: String,
+        verdict: Verdict,
+        confidence: f64,
+        score: f64,
+    },
+    Abstention {
+        model_name: String,
+    },
+    CallFailed,
+    Silence,
+    MalformedReply,
+}
+
+/// A caller supplied model transport under DM-20. The one
+/// operation takes the rendered vignette and returns the
+/// consultation outcome. The pinned model name stands beside
+/// it because the fallback pattern of DM-17 records the name
+/// of the model the transport stands pinned to, and a
+/// fallback outcome carries no reply a name could be read
+/// from.
+pub trait ModelTransport {
+    fn consult(&self, vignette: &str) -> Consultation;
+    fn pinned_model_name(&self) -> &str;
+}
+
+/// A fixture transport, shipped in the crate because the gate
+/// and the recording harness and any rehearsing host need the
+/// same shape, and a test only copy would fork it. It answers
+/// canned consultations in the order supplied and records
+/// every vignette it was shown, and it performs no network
+/// access and spawns no process. A consultation asked past
+/// the supplied replies is a call failure, the class a script
+/// that has run out has honestly earned.
+pub struct FixtureTransport {
+    model_name: String,
+    replies: std::cell::RefCell<std::collections::VecDeque<Consultation>>,
+    shown: std::cell::RefCell<Vec<String>>,
+}
+
+impl FixtureTransport {
+    pub fn new(model_name: &str, replies: Vec<Consultation>) -> FixtureTransport {
+        FixtureTransport {
+            model_name: model_name.to_string(),
+            replies: std::cell::RefCell::new(replies.into()),
+            shown: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Every vignette this transport was shown, in order.
+    pub fn shown(&self) -> Vec<String> {
+        self.shown.borrow().clone()
+    }
+
+    /// How many canned replies stand unspent.
+    pub fn remaining(&self) -> usize {
+        self.replies.borrow().len()
+    }
+}
+
+impl ModelTransport for FixtureTransport {
+    fn consult(&self, vignette: &str) -> Consultation {
+        self.shown.borrow_mut().push(vignette.to_string());
+        self.replies
+            .borrow_mut()
+            .pop_front()
+            .unwrap_or(Consultation::CallFailed)
+    }
+
+    fn pinned_model_name(&self) -> &str {
+        &self.model_name
+    }
+}
+
+/// The model fields one consultation record carries, in one
+/// of the patterns of DM-17.
+struct ConsultationFields {
+    model_name: Option<String>,
+    model_verdict: Option<String>,
+    model_confidence: Option<f64>,
+    model_score: Option<f64>,
+    fallback_taken: Option<String>,
+}
+
+/// Turn a consultation outcome into the fields its record
+/// carries. An outcome whose values stand outside the shapes
+/// DM-17 records lands in the malformed reply class on the
+/// pinned name, because a record the reader would refuse must
+/// never be written by the switch's own hand.
+fn consultation_fields(outcome: Consultation, pinned: &str) -> ConsultationFields {
+    fn fallback(class: &str, name: &str) -> ConsultationFields {
+        ConsultationFields {
+            model_name: Some(name.to_string()),
+            model_verdict: None,
+            model_confidence: None,
+            model_score: None,
+            fallback_taken: Some(class.to_string()),
+        }
+    }
+    match outcome {
+        Consultation::Verdict {
+            model_name,
+            verdict,
+            confidence,
+            score,
+        } if model_name_shape_ok(&model_name)
+            && model_name == pinned
+            && (0.0..=1.0).contains(&confidence)
+            && (0.0..=1.0).contains(&score) =>
+        {
+            ConsultationFields {
+                model_name: Some(model_name),
+                model_verdict: Some(verdict.label().to_string()),
+                model_confidence: Some(confidence),
+                model_score: Some(score),
+                fallback_taken: None,
+            }
+        }
+        Consultation::Abstention { model_name }
+            if model_name_shape_ok(&model_name) && model_name == pinned =>
+        {
+            fallback("abstention", &model_name)
+        }
+        Consultation::CallFailed => fallback("call failed", pinned),
+        Consultation::Silence => fallback("silence", pinned),
+        _ => fallback("malformed reply", pinned),
+    }
+}
+
+/// The doctrine preamble of the vignette, a constant of the
+/// library. It states the fall rules exactly, in so many
+/// words, because the window evaluation behind this slice
+/// found that a judge applies a doctrine the prompt states
+/// and supplies none that is left implicit. The confidence
+/// bars of DM-15 stand nowhere in it, because a model told
+/// its own bar can aim at it.
+const DOCTRINE_PREAMBLE: &str = "You are judging one evaluation of a staged kill switch for an agent run. The switch stands at one stage of a ladder, none and warn and throttle and cut tools and cut budget and kill, and it moves a run up the ladder to protect the systems around it and down the ladder as danger passes. Deterministic rules own the spend ceilings and the kill and the first move into warn, and none of that is before you. You judge only a run standing at warn or throttle or cut tools, and you answer with one verdict among hold and escalate and de-escalate, with a confidence, and with a score for how likely the run is to be running away.\n\nThe fall rules of the switch bind your verdict. A stage falls only after two consecutive clean evaluations, never after one, however clean the one looks. A stage entered for structural reasons, a planned spend profile that is proceeding to plan among them, is not relaxed because the current picture is tidy. Recommend de-escalate only where the signals that raised the stage have actually cleared and the fall has two consecutive clean evaluations behind it, because where fewer stand, hold is the truthful verdict even when nothing currently looks wrong. Recommend escalate only where the run should stand one stage higher than it stands, never more, because an escalation takes effect one step at a time. Where the evidence cuts both ways, hold. Where you cannot judge the picture before you, abstain rather than guess.";
+
+/// Whole seconds from one instant to another, floored, the
+/// age the vignette states for a recorded fact.
+fn age_seconds(from: &Instant, to: &Instant) -> i128 {
+    (to.epoch_micros() - from.epoch_micros()).div_euclid(1_000_000)
+}
+
+fn int_text(number: &JsonInt) -> String {
+    match number {
+        JsonInt::Small(value) => value.to_string(),
+        JsonInt::Big(text) => text.clone(),
+    }
+}
+
+fn counted(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+/// Render the vignette of DM-14, the picture the model
+/// receives. The rendering is a pure function of the run and
+/// the evaluation instant and the optional host context, and
+/// the suite pins it byte for byte. What never crosses stands
+/// in DM-14, the run id and the state path and any part of
+/// any other run and the confidence bars and any credential
+/// or transport detail.
+fn render_vignette(
+    run: &Run,
+    now: &Instant,
+    warranted: usize,
+    reasons: &[&str],
+    missed: i128,
+    host_context: Option<&str>,
+) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("The run stands at stage {}.", run.stage));
+    lines.push(format!(
+        "The triggers at this instant warrant stage {}.",
+        STAGES[warranted]
+    ));
+    if reasons.is_empty() {
+        lines.push("No trigger stands live at this instant.".to_string());
+    } else {
+        lines.push(format!("The live reasons are {}.", reasons.join(", ")));
+    }
+    lines.push(format!(
+        "The missed proof count stands at {missed} and the missed proof limit stands at {} \
+         and the proof interval stands at {} seconds.",
+        run.missed_proof_limit,
+        int_text(&run.proof_interval_seconds)
+    ));
+    let registered = parse_instant(&run.registered_at).expect("a validated instant parses");
+    match &run.last_proof_at {
+        Some(text) => {
+            let proof = parse_instant(text).expect("a validated instant parses");
+            lines.push(format!(
+                "The last proof stands at an age of {} whole seconds.",
+                age_seconds(&proof, now)
+            ));
+        }
+        None => {
+            lines.push(format!(
+                "No proof stands, and the registration stands at an age of {} whole \
+                 seconds.",
+                age_seconds(&registered, now)
+            ));
+        }
+    }
+    lines.push(format!(
+        "The accumulated spend stands at {}.",
+        run.spend_total
+    ));
+    for (name, ceiling) in [("soft", run.soft_ceiling), ("hard", run.hard_ceiling)] {
+        match ceiling {
+            None => lines.push(format!("No {name} ceiling stands.")),
+            Some(ceiling) if run.spend_total < ceiling => lines.push(format!(
+                "The {name} ceiling stands at {ceiling} and the spend stands below it \
+                 by {}.",
+                ceiling - run.spend_total
+            )),
+            Some(ceiling) => lines.push(format!(
+                "The {name} ceiling stands at {ceiling} and the spend stands at or \
+                 above it."
+            )),
+        }
+    }
+    lines.push(format!(
+        "The standing clear streak stands at {}.",
+        int_text(&run.clear_streak)
+    ));
+    let stage_records: Vec<&Record> = run
+        .log
+        .iter()
+        .filter(|record| record.kind == "stage")
+        .collect();
+    if stage_records.is_empty() {
+        lines.push("No stage record stands in the log.".to_string());
+    } else {
+        lines.push("The last stage records in sequence order stand as follows.".to_string());
+        let skip = stage_records.len().saturating_sub(5);
+        for record in &stage_records[skip..] {
+            let at = parse_instant(&record.at).expect("a validated instant parses");
+            let naming = if record.reasons.is_empty() {
+                "naming no reasons".to_string()
+            } else {
+                format!("naming {}", record.reasons.join(", "))
+            };
+            lines.push(format!(
+                "A stage record at stage {} {} stands at an age of {} whole seconds.",
+                record.stage,
+                naming,
+                age_seconds(&at, now)
+            ));
+        }
+    }
+    // The record that entered the standing stage opens the
+    // trailing run of stage records at that stage, so the
+    // traffic since the stage was entered is the traffic
+    // after that record.
+    let mut entry: Option<usize> = None;
+    for (position, record) in run.log.iter().enumerate() {
+        if record.kind == "stage" {
+            if record.stage != run.stage {
+                entry = None;
+            } else if entry.is_none() {
+                entry = Some(position);
+            }
+        }
+    }
+    let start = entry.map_or(0, |position| position + 1);
+    let proofs = run.log[start..]
+        .iter()
+        .filter(|record| record.kind == "proof")
+        .count();
+    let spends = run.log[start..]
+        .iter()
+        .filter(|record| record.kind == "spend")
+        .count();
+    lines.push(format!(
+        "Since the run entered stage {} it has recorded {} and {}.",
+        run.stage,
+        counted(proofs, "proof record", "proof records"),
+        counted(spends, "spend record", "spend records")
+    ));
+    lines.push("No proof note stands recorded in the decision log.".to_string());
+    let mut text = String::from(DOCTRINE_PREAMBLE);
+    text.push_str("\n\nThe state of the run at this evaluation stands as follows.\n");
+    text.push_str(&lines.join("\n"));
+    if let Some(context) = host_context {
+        text.push_str(
+            "\n\nHost supplied context follows. It is marked as host supplied and it is \
+             recorded nowhere.\n",
+        );
+        text.push_str(context);
+    }
+    text
+}
+
+/// The levels of the score question, first to tenth, the ten
+/// levels standing for the values from 0 to 1 in ninths.
+const SCORE_LEVELS: [&str; 10] = [
+    "no sign that the run is running away",
+    "a trace of concern and nothing corroborating it",
+    "one signal out of place and the rest steady",
+    "signals beginning to lean the wrong way",
+    "a mixed picture with real weight on the wrong side",
+    "several signals corroborating each other",
+    "the picture of a run losing its shape",
+    "strong evidence the run is running away",
+    "a runaway in all but the final proof",
+    "a runaway in progress",
+];
+
+/// The call payload the subprocess transport writes, a JSON
+/// document holding the pinned model name and the vignette as
+/// the state text and the two questions of the doctrine, a
+/// choice question over the three verdict labels with the
+/// criterion of each label and a score question over the ten
+/// declared levels.
+fn judge_payload(model_name: &str, vignette: &str) -> String {
+    let labels: Vec<Value> = [
+        (
+            "hold",
+            "The run should stand at its stage, where the picture is mixed, or the \
+             fall has not been earned by two consecutive clean evaluations, or the \
+             elevation is structural and proceeding to plan.",
+        ),
+        (
+            "escalate",
+            "The run should stand one stage higher, where corroborating signals \
+             stand behind the rise, among them rising spend velocity and \
+             compounding missed proofs and new classes of action.",
+        ),
+        (
+            "de-escalate",
+            "The run should stand one stage lower, where the signals that raised \
+             the stage have actually cleared and two consecutive clean evaluations \
+             stand behind the fall.",
+        ),
+    ]
+    .iter()
+    .map(|(label, criterion)| {
+        Value::Object(vec![
+            ("label".to_string(), Value::Str(label.to_string())),
+            ("criterion".to_string(), Value::Str(criterion.to_string())),
+        ])
+    })
+    .collect();
+    let levels: Vec<Value> = SCORE_LEVELS
+        .iter()
+        .map(|level| Value::Str(level.to_string()))
+        .collect();
+    let value = Value::Object(vec![
+        ("model".to_string(), Value::Str(model_name.to_string())),
+        ("state".to_string(), Value::Str(vignette.to_string())),
+        (
+            "questions".to_string(),
+            Value::Array(vec![
+                Value::Object(vec![
+                    ("kind".to_string(), Value::Str("choice".to_string())),
+                    ("labels".to_string(), Value::Array(labels)),
+                ]),
+                Value::Object(vec![
+                    ("kind".to_string(), Value::Str("score".to_string())),
+                    ("levels".to_string(), Value::Array(levels)),
+                ]),
+            ]),
+        ),
+    ]);
+    let mut out = String::new();
+    dump_value(&value, 0, &mut out);
+    out
+}
+
+/// Read a consultation out of a helper reply body, under the
+/// reply shape this slice pins. The body is one JSON document
+/// naming the model and carrying a choice object whose label
+/// is one of the three verdict labels or null for an
+/// abstention and, on a verdict, the confidence standing
+/// against the chosen label, and a score object whose level
+/// is an integer from 1 to 10. Anything off that shape is a
+/// malformed reply, and a reported model name other than the
+/// pinned name is a malformed reply.
+fn extract_reply(body: &str, pinned: &str) -> Consultation {
+    let value = match parse_document(body.as_bytes()) {
+        Ok(value) => value,
+        Err(_) => return Consultation::MalformedReply,
+    };
+    let map = match object_map(&value) {
+        Some(map) => map,
+        None => return Consultation::MalformedReply,
+    };
+    let model_name = match map.get("model") {
+        Some(Value::Str(text)) => (*text).clone(),
+        _ => return Consultation::MalformedReply,
+    };
+    if model_name != pinned {
+        return Consultation::MalformedReply;
+    }
+    let choice = match map.get("choice") {
+        Some(value) => match object_map(value) {
+            Some(map) => map,
+            None => return Consultation::MalformedReply,
+        },
+        None => return Consultation::MalformedReply,
+    };
+    let verdict = match choice.get("label") {
+        Some(Value::Null) => {
+            // An abstention is a well formed reply that
+            // reports no decision under DM-16, so a confidence
+            // or a score standing outside its declared range
+            // makes the reply malformed even here, where no
+            // verdict stands to carry them.
+            if let Some(value) = choice.get("confidence") {
+                if model_number_unit(value).is_none() {
+                    return Consultation::MalformedReply;
+                }
+            }
+            if let Some(value) = map.get("score") {
+                let level_ok = match object_map(value) {
+                    Some(score_map) => matches!(
+                        score_map.get("level"),
+                        Some(Value::Int(level)) if (1..=10).contains(level)
+                    ),
+                    None => false,
+                };
+                if !level_ok {
+                    return Consultation::MalformedReply;
+                }
+            }
+            return Consultation::Abstention { model_name };
+        }
+        Some(Value::Str(text)) => match Verdict::from_label(text) {
+            Some(verdict) => verdict,
+            None => return Consultation::MalformedReply,
+        },
+        _ => return Consultation::MalformedReply,
+    };
+    let confidence = match choice.get("confidence") {
+        Some(value) => match model_number_unit(value) {
+            Some(number) => number,
+            None => return Consultation::MalformedReply,
+        },
+        None => return Consultation::MalformedReply,
+    };
+    let score_map = match map.get("score") {
+        Some(value) => match object_map(value) {
+            Some(map) => map,
+            None => return Consultation::MalformedReply,
+        },
+        None => return Consultation::MalformedReply,
+    };
+    let level = match score_map.get("level") {
+        Some(Value::Int(level)) if (1..=10).contains(level) => *level,
+        _ => return Consultation::MalformedReply,
+    };
+    Consultation::Verdict {
+        model_name,
+        verdict,
+        confidence,
+        score: (level - 1) as f64 / 9.0,
+    }
+}
+
+/// The widest reply body the subprocess transport will read.
+/// A body past the bound is a malformed reply under DM-16.
+const REPLY_MAX_BYTES: usize = 64 * 1024;
+
+/// The grace the subprocess transport grants its reader
+/// thread to deliver the drained reply after the helper
+/// status resolves, before the call fails under DM-20.
+const READER_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// A live transport that drives an operator supplied helper
+/// command, the connector helper of the program being its
+/// intended program. On a consultation it writes the call
+/// payload to a temporary file it creates exclusively and
+/// removes when the call ends, runs the program with the raw
+/// payload flag the helper offers and that file as its
+/// argument, and waits with the deadline it was constructed
+/// with, killing and reaping the child past the deadline. An
+/// exit but success with an empty body is silence, and any
+/// other nonzero exit is a call failure whatever its code.
+/// The payload carries the vignette and no credential, and
+/// the transport inherits the environment of its process and
+/// sets nothing and stores nothing, so the library holds no
+/// key in any form.
+pub struct SubprocessTransport {
+    program: PathBuf,
+    args: Vec<String>,
+    timeout: std::time::Duration,
+    model_name: String,
+}
+
+impl SubprocessTransport {
+    pub fn new(
+        program: PathBuf,
+        args: Vec<String>,
+        timeout: std::time::Duration,
+    ) -> SubprocessTransport {
+        SubprocessTransport {
+            program,
+            args,
+            timeout,
+            model_name: MODEL_NAME.to_string(),
+        }
+    }
+
+    fn run_helper(&self, payload_path: &PathBuf) -> Consultation {
+        // The deadline is computed before any process or
+        // thread stands, with a checked addition, so a timeout
+        // too wide to add to the current instant fails the call
+        // here and leaves nothing running and nothing to reap,
+        // and the caller still removes the payload file.
+        let Some(deadline) = std::time::Instant::now().checked_add(self.timeout) else {
+            return Consultation::CallFailed;
+        };
+        let mut command = std::process::Command::new(&self.program);
+        command
+            .args(&self.args)
+            .arg("--raw-payload")
+            .arg(payload_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null());
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(_) => return Consultation::CallFailed,
+        };
+        let mut stdout = child.stdout.take().expect("stdout is piped");
+        // The reply is drained on its own thread so a helper
+        // that writes more than a pipe holds cannot wedge the
+        // deadline loop, and only the bounded head is kept.
+        // The drained reply reaches this thread over a channel,
+        // because the wait for it must stand bounded below.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut stored: Vec<u8> = Vec::new();
+            let mut total: usize = 0;
+            let mut chunk = [0u8; 8192];
+            loop {
+                match stdout.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        total += read;
+                        if stored.len() <= REPLY_MAX_BYTES {
+                            let keep = (REPLY_MAX_BYTES + 1 - stored.len()).min(read);
+                            stored.extend_from_slice(&chunk[..keep]);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = sender.send((stored, total));
+        });
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Some(status),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break None;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => break None,
+            }
+        };
+        // The reader finishes at the end of the pipe, and the
+        // pipe reaches its end only when every process holding
+        // it closes it. A child of the helper can hold the pipe
+        // open past the helper's own exit and past its kill, as
+        // the subprocess lifecycle probe in CONTRACT.md
+        // records, so an unbounded wait here would let the
+        // consultation run past the deadline DM-20 bounds it
+        // by, inside the exclusive lock of DM-10. The wait
+        // stands bounded by a short grace, and a reader that
+        // has not finished inside it fails the call, with its
+        // thread left to end when the pipe finally closes.
+        let (body, total) = match receiver.recv_timeout(READER_GRACE) {
+            Ok(reply) => reply,
+            Err(_) => return Consultation::CallFailed,
+        };
+        let status = match status {
+            Some(status) => status,
+            None => return Consultation::CallFailed,
+        };
+        if !status.success() {
+            return Consultation::CallFailed;
+        }
+        if total > REPLY_MAX_BYTES {
+            return Consultation::MalformedReply;
+        }
+        let text = match String::from_utf8(body) {
+            Ok(text) => text,
+            Err(_) => return Consultation::MalformedReply,
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Consultation::Silence;
+        }
+        extract_reply(trimmed, &self.model_name)
+    }
+}
+
+impl ModelTransport for SubprocessTransport {
+    fn consult(&self, vignette: &str) -> Consultation {
+        let payload = judge_payload(&self.model_name, vignette);
+        let temp = match write_payload_temp(&payload) {
+            Ok(path) => path,
+            Err(_) => return Consultation::CallFailed,
+        };
+        let outcome = self.run_helper(&temp);
+        let _ = std::fs::remove_file(&temp);
+        outcome
+    }
+
+    fn pinned_model_name(&self) -> &str {
+        &self.model_name
+    }
+}
+
+static PAYLOAD_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Write the call payload to a temporary file created
+/// exclusively, in the directory the process environment
+/// names for temporary files, under a name carrying the
+/// process id and a counter and a random draw, so no other
+/// call predicts it and a plant standing at the name fails
+/// the write instead of being followed.
+fn write_payload_temp(payload: &str) -> std::io::Result<PathBuf> {
+    for _ in 0..16 {
+        let mut draw = [0u8; 8];
+        getrandom::fill(&mut draw).map_err(|err| std::io::Error::other(err.to_string()))?;
+        let mut suffix = String::new();
+        for byte in draw {
+            suffix.push_str(&format!("{byte:02x}"));
+        }
+        let count = PAYLOAD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "deadman-judge-{}-{count}-{suffix}",
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut handle) => {
+                if let Err(err) = handle.write_all(payload.as_bytes()) {
+                    drop(handle);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(err);
+                }
+                return Ok(path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::other(
+        "no exclusive temporary name could be taken",
+    ))
 }
 
 struct LockGuard {
@@ -2868,6 +3927,36 @@ impl Switch {
             at,
             stage: stage.to_string(),
             reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
+            model_name: None,
+            model_verdict: None,
+            model_confidence: None,
+            model_score: None,
+            fallback_taken: None,
+        });
+        Ok(())
+    }
+
+    /// Append the stage record that carries a consultation, the
+    /// one act DM-13 makes of the consultation and its record.
+    fn append_consultation_record(
+        run: &mut Run,
+        now: &Instant,
+        stage: &str,
+        reasons: &[&str],
+        fields: ConsultationFields,
+    ) -> Result<()> {
+        let at = format_instant(now)?;
+        run.log.push(Record {
+            seq: run.log.len() as u64 + 1,
+            kind: "stage".to_string(),
+            at,
+            stage: stage.to_string(),
+            reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
+            model_name: fields.model_name,
+            model_verdict: fields.model_verdict,
+            model_confidence: fields.model_confidence,
+            model_score: fields.model_score,
+            fallback_taken: fields.fallback_taken,
         });
         Ok(())
     }
@@ -3026,6 +4115,56 @@ impl Switch {
     /// Evaluate one run at the instant and report its stage and
     /// reasons.
     pub fn stage(&self, run_id: &Value, now: &Instant) -> Result<StageReport> {
+        self.evaluate(run_id, now, None)
+    }
+
+    /// Evaluate one run at the instant with the model entry
+    /// point of DM-13, consulting the caller supplied transport
+    /// at most once where a seat of DM-13 stands open, and
+    /// report the stage and reasons the combined evaluation
+    /// reaches. With no transport configured the evaluation is
+    /// the stage operation exactly. A host context supplied
+    /// with no transport to carry it, and a host context past
+    /// the bound of DM-14, are caller errors refused before any
+    /// state changes.
+    pub fn stage_with_model(
+        &self,
+        run_id: &Value,
+        now: &Instant,
+        transport: Option<&dyn ModelTransport>,
+        host_context: Option<&str>,
+    ) -> Result<StageReport> {
+        if host_context.is_some() && transport.is_none() {
+            return Err(Error::InvalidRequest(
+                "a host context stands supplied with no model transport to carry it".to_string(),
+            ));
+        }
+        if let Some(context) = host_context {
+            if context.chars().count() > HOST_CONTEXT_MAX {
+                return Err(Error::InvalidRequest(format!(
+                    "the host context stands past the bound of {HOST_CONTEXT_MAX} \
+                     characters"
+                )));
+            }
+        }
+        self.evaluate(
+            run_id,
+            now,
+            transport.map(|carrier| (carrier, host_context)),
+        )
+    }
+
+    /// The shared evaluation path of the two entry points, so
+    /// the stale evaluation rule of DM-19 stands in both. The
+    /// deterministic branches are the landed evaluation, and a
+    /// consultation stands inside the same exclusive lock,
+    /// decided from the state the lock protects.
+    fn evaluate(
+        &self,
+        run_id: &Value,
+        now: &Instant,
+        model: Option<(&dyn ModelTransport, Option<&str>)>,
+    ) -> Result<StageReport> {
         validate_name(run_id)?;
         validate_now(now)?;
         let run_id = match run_id {
@@ -3046,8 +4185,100 @@ impl Switch {
         }
         let (warranted, reasons) = warrant(&document.runs[index], now)?;
         let recorded = stage_index(&document.runs[index].stage);
+        let stale = *now < reference_instant(&document.runs[index]);
+        // The seats of DM-13. The held seat stands where the
+        // warrant stands equal to a middle recorded stage. The
+        // fall seat stands where the warrant stands below a
+        // middle recorded stage with the standing clear streak
+        // at 1 and the instant fresh, because the fall decision
+        // seat stands closed to a stale evaluation under DM-19.
+        // No other evaluation consults the model.
+        let streak_at_one = document.runs[index].clear_streak.cmp_i128(1) == Ordering::Equal;
+        let middle = matches!(recorded, 1..=3);
+        let seat = if model.is_some() && middle && warranted == recorded {
+            Some(Seat::Held)
+        } else if model.is_some() && middle && warranted < recorded && streak_at_one && !stale {
+            Some(Seat::Fall)
+        } else {
+            None
+        };
         let mut changed = false;
-        if warranted > recorded {
+        if let Some(seat) = seat {
+            let (transport, context) =
+                model.expect("a seat stands only where a transport stands configured");
+            let pinned = transport.pinned_model_name();
+            if !model_name_shape_ok(pinned) {
+                return Err(Error::InvalidRequest(format!(
+                    "the model transport stands pinned to a model name outside \
+                     the shape a record can carry, {}",
+                    py_repr_str(pinned)
+                )));
+            }
+            let (missed, vignette) = {
+                let run = &document.runs[index];
+                let missed = missed_proofs(run, now)?;
+                let vignette = render_vignette(run, now, warranted, &reasons, missed, context);
+                (missed, vignette)
+            };
+            let fields = consultation_fields(transport.consult(&vignette), pinned);
+            match seat {
+                Seat::Held => {
+                    // The combination rule at the held seat. An
+                    // escalate verdict at or above the bar rises
+                    // the stage by exactly one step, and every
+                    // other outcome holds it, and the record
+                    // carries the consultation either way.
+                    let applies = fields.model_verdict.as_deref() == Some("escalate")
+                        && fields
+                            .model_confidence
+                            .is_some_and(|confidence| confidence >= ESCALATION_BAR);
+                    let run = &mut document.runs[index];
+                    if applies {
+                        run.stage = STAGES[recorded + 1].to_string();
+                    }
+                    if applies || !stale {
+                        run.clear_streak = JsonInt::Small(0);
+                    }
+                    let stage = run.stage.clone();
+                    Self::append_consultation_record(run, now, &stage, &reasons, fields)?;
+                }
+                Seat::Fall => {
+                    // The combination rule at the fall seat. The
+                    // step down is endorsed only where the
+                    // verdict is de-escalate at or above the
+                    // high bar and the cleared signals predicates
+                    // of DM-15 hold, the missed proof warrant
+                    // standing below the recorded stage and the
+                    // spend standing below each standing ceiling,
+                    // the warrant standing below the stage being
+                    // the seat's own term. Every other outcome
+                    // holds the stage and spends the streak, and
+                    // the record carries the consultation.
+                    let endorsed = {
+                        let run = &document.runs[index];
+                        fields.model_verdict.as_deref() == Some("de-escalate")
+                            && fields
+                                .model_confidence
+                                .is_some_and(|confidence| confidence >= DE_ESCALATION_BAR)
+                            && missed_warrant_index(missed, run.missed_proof_limit) < recorded
+                            && run
+                                .soft_ceiling
+                                .is_none_or(|ceiling| run.spend_total < ceiling)
+                            && run
+                                .hard_ceiling
+                                .is_none_or(|ceiling| run.spend_total < ceiling)
+                    };
+                    let run = &mut document.runs[index];
+                    if endorsed {
+                        run.stage = STAGES[recorded - 1].to_string();
+                    }
+                    run.clear_streak = JsonInt::Small(0);
+                    let stage = run.stage.clone();
+                    Self::append_consultation_record(run, now, &stage, &reasons, fields)?;
+                }
+            }
+            changed = true;
+        } else if warranted > recorded {
             let run = &mut document.runs[index];
             run.stage = STAGES[warranted].to_string();
             run.clear_streak = JsonInt::Small(0);
@@ -3059,7 +4290,7 @@ impl Switch {
             changed = true;
         } else if warranted == recorded {
             let run = &mut document.runs[index];
-            if !run.clear_streak.is_zero() {
+            if !stale && !run.clear_streak.is_zero() {
                 run.clear_streak = JsonInt::Small(0);
                 changed = true;
             }
@@ -3068,7 +4299,7 @@ impl Switch {
                 Self::append_record(run, "stage", now, &stage, &reasons)?;
                 changed = true;
             }
-        } else {
+        } else if !stale {
             let run = &mut document.runs[index];
             run.clear_streak = run.clear_streak.add_one();
             changed = true;
