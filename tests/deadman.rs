@@ -2437,7 +2437,6 @@ fn last_record(switch: &Switch) -> Record {
 fn model_bars_stand_as_named_constants() {
     assert_eq!(ESCALATION_BAR, 0.60);
     assert_eq!(DE_ESCALATION_BAR, 0.85);
-    assert!(DE_ESCALATION_BAR > ESCALATION_BAR);
     assert_eq!(MODEL_NAME, "jev-1.13.0");
 }
 
@@ -2879,12 +2878,7 @@ fn host_context_refusals_change_nothing() {
     let switch = switch_at_warn(&dir);
     let before = state_bytes(&dir);
     // A context with no transport to carry it.
-    assert_invalid_request(switch.stage_with_model(
-        &text("run-a"),
-        &at(61),
-        None,
-        Some("context"),
-    ));
+    assert_invalid_request(switch.stage_with_model(&text("run-a"), &at(61), None, Some("context")));
     assert_eq!(state_bytes(&dir), before);
     // A context past the bound of 2000 characters.
     let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
@@ -2912,19 +2906,9 @@ fn a_transport_pinned_outside_the_recordable_shape_is_refused() {
     let switch = switch_at_warn(&dir);
     let before = state_bytes(&dir);
     let empty = FixtureTransport::new("", vec![verdict(Verdict::Hold, 0.9, 0.5)]);
-    assert_invalid_request(switch.stage_with_model(
-        &text("run-a"),
-        &at(61),
-        Some(&empty),
-        None,
-    ));
+    assert_invalid_request(switch.stage_with_model(&text("run-a"), &at(61), Some(&empty), None));
     let wide = FixtureTransport::new(&"x".repeat(129), vec![verdict(Verdict::Hold, 0.9, 0.5)]);
-    assert_invalid_request(switch.stage_with_model(
-        &text("run-a"),
-        &at(61),
-        Some(&wide),
-        None,
-    ));
+    assert_invalid_request(switch.stage_with_model(&text("run-a"), &at(61), Some(&wide), None));
     assert_eq!(state_bytes(&dir), before);
 }
 
@@ -2952,6 +2936,41 @@ fn an_out_of_shape_verdict_lands_as_a_malformed_reply() {
         last_record(&switch).fallback_taken.as_deref(),
         Some("malformed reply")
     );
+}
+
+#[test]
+fn a_reply_naming_a_model_other_than_the_pinned_one_is_malformed() {
+    // A verdict naming another model, carried by a transport
+    // pinned to the recorded name, lands in the malformed
+    // reply class of DM-16 on the pinned name.
+    let dir = TestDir::new("model-verdict-wrong-name");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![Consultation::Verdict {
+        model_name: "other-1.0".to_string(),
+        verdict: Verdict::Escalate,
+        confidence: 0.9,
+        score: 0.5,
+    }]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.fallback_taken.as_deref(), Some("malformed reply"));
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    // The same refusal stands for an abstention naming
+    // another model.
+    let dir = TestDir::new("model-abstention-wrong-name");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![Consultation::Abstention {
+        model_name: "other-1.0".to_string(),
+    }]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    let record = last_record(&switch);
+    assert_eq!(record.fallback_taken.as_deref(), Some("malformed reply"));
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
 }
 
 #[test]
@@ -3018,12 +3037,12 @@ fn no_transport_model_evaluation_matches_the_stage_operation_byte_for_byte() {
 /// Write a state text into a fresh directory and read its log,
 /// expecting the corruption refusal, with the bytes standing
 /// unchanged after the refused read.
-fn assert_corrupt_state_text(text: &str) {
+fn assert_corrupt_state_text(state: &str) {
     let dir = TestDir::new("model-damage");
-    std::fs::write(state_path(&dir), text).expect("the damaged state is written");
+    std::fs::write(state_path(&dir), state).expect("the damaged state is written");
     let switch = make_switch(&dir);
     assert_corrupt(switch.log(&text("run-a")));
-    assert_eq!(state_text(&dir), text);
+    assert_eq!(state_text(&dir), state);
 }
 
 /// Split a state text at the first record of a kind, so a
@@ -3031,20 +3050,14 @@ fn assert_corrupt_state_text(text: &str) {
 fn split_at_kind(text: &str, kind: &str) -> (String, String) {
     let needle = format!("\"kind\": \"{kind}\"");
     let position = text.find(&needle).expect("the record kind stands");
-    (
-        text[..position].to_string(),
-        text[position..].to_string(),
-    )
+    (text[..position].to_string(), text[position..].to_string())
 }
 
 /// Split a state text at the last record of a kind.
 fn split_at_last_kind(text: &str, kind: &str) -> (String, String) {
     let needle = format!("\"kind\": \"{kind}\"");
     let position = text.rfind(&needle).expect("the record kind stands");
-    (
-        text[..position].to_string(),
-        text[position..].to_string(),
-    )
+    (text[..position].to_string(), text[position..].to_string())
 }
 
 #[test]
@@ -3083,15 +3096,13 @@ fn model_record_damage_battery() {
     let verdict_state = state_text(&dir);
     // A verdict pattern missing its score stands in no
     // recorded pattern.
-    assert_corrupt_state_text(&verdict_state.replace(
-        "\"model_score\": 0.5",
-        "\"model_score\": null",
-    ));
+    assert_corrupt_state_text(
+        &verdict_state.replace("\"model_score\": 0.5", "\"model_score\": null"),
+    );
     // A confidence past the unit interval.
-    assert_corrupt_state_text(&verdict_state.replace(
-        "\"model_confidence\": 0.99",
-        "\"model_confidence\": 1.5",
-    ));
+    assert_corrupt_state_text(
+        &verdict_state.replace("\"model_confidence\": 0.99", "\"model_confidence\": 1.5"),
+    );
     // A verdict outside the recorded names.
     assert_corrupt_state_text(&verdict_state.replace(
         "\"model_verdict\": \"de-escalate\"",
@@ -3108,9 +3119,12 @@ fn model_record_damage_battery() {
         )
     );
     assert_corrupt_state_text(&damaged);
-    // Model fields standing on a proof record.
+    // Model fields standing on a proof record. The seat
+    // helper is called for the state it writes alone, and
+    // this case damages and re-reads that state and drives
+    // no evaluation of its own.
     let dir = TestDir::new("model-damage-proof");
-    let switch = switch_at_throttle_fall_seat(&dir);
+    switch_at_throttle_fall_seat(&dir);
     let proof_state = state_text(&dir);
     let (head, tail) = split_at_kind(&proof_state, "proof");
     let damaged = format!(
@@ -3134,7 +3148,11 @@ fn model_record_damage_battery() {
     let (head, tail) = split_at_kind(&rise_state, "stage");
     let tail = tail
         .replacen("\"model_name\": \"jev-1.13.0\"", "\"model_name\": null", 1)
-        .replacen("\"model_verdict\": \"escalate\"", "\"model_verdict\": null", 1)
+        .replacen(
+            "\"model_verdict\": \"escalate\"",
+            "\"model_verdict\": null",
+            1,
+        )
         .replacen("\"model_confidence\": 0.9", "\"model_confidence\": null", 1)
         .replacen("\"model_score\": 0.5", "\"model_score\": null", 1);
     assert_corrupt_state_text(&format!("{head}{tail}"));
@@ -3146,10 +3164,9 @@ fn model_record_damage_battery() {
         .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
         .unwrap();
     let step_state = state_text(&dir);
-    assert_corrupt_state_text(&step_state.replace(
-        "\"model_confidence\": 0.9",
-        "\"model_confidence\": 0.84",
-    ));
+    assert_corrupt_state_text(
+        &step_state.replace("\"model_confidence\": 0.9", "\"model_confidence\": 0.84"),
+    );
     // A fallback class outside the closed vocabulary.
     let dir = TestDir::new("model-damage-fallback");
     let switch = switch_at_warn(&dir);
@@ -3229,6 +3246,20 @@ fn subprocess_transport_classes() {
             Consultation::MalformedReply,
         ),
         (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null, \"confidence\": 1.5}, \"score\": {\"level\": 5}}'\n",
+            Consultation::MalformedReply,
+        ),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}, \"score\": {\"level\": 11}}'\n",
+            Consultation::MalformedReply,
+        ),
+        (
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null, \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
+            Consultation::Abstention {
+                model_name: MODEL_NAME.to_string(),
+            },
+        ),
+        (
             "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 11}}'\n",
             Consultation::MalformedReply,
         ),
@@ -3273,6 +3304,46 @@ fn subprocess_transport_enforces_its_deadline() {
     let outcome = transport.consult("vignette");
     assert_eq!(outcome, Consultation::CallFailed);
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
+}
+
+#[test]
+fn subprocess_transport_bounds_the_reader_wait() {
+    // The helper writes a verdict and exits at once, and a
+    // background child of the helper holds the stdout pipe
+    // open for three more seconds, as the subprocess
+    // lifecycle probe in CONTRACT.md records a pipe can be
+    // held. The drained reply never reaches its end inside
+    // the bounded wait, so the call fails inside that wait
+    // and not at the end of the pipe.
+    let dir = TestDir::new("model-subprocess-held-pipe");
+    let helper = write_helper(
+        &dir,
+        "held.sh",
+        "#!/bin/sh\nsleep 3 &\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
+    );
+    let transport = subprocess(helper, std::time::Duration::from_secs(10));
+    let started = std::time::Instant::now();
+    let outcome = transport.consult("vignette");
+    assert_eq!(outcome, Consultation::CallFailed);
+    assert!(started.elapsed() < std::time::Duration::from_millis(2500));
+}
+
+#[test]
+fn subprocess_transport_refuses_a_timeout_it_cannot_add() {
+    // A timeout too wide to add to the current instant fails
+    // the call before any helper stands spawned, so the
+    // helper never runs and writes no marker.
+    let dir = TestDir::new("model-subprocess-wide-timeout");
+    let marker = dir.path().join("payload-path.txt");
+    let body = format!(
+        "#!/bin/sh\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+        marker.display()
+    );
+    let helper = write_helper(&dir, "verdict.sh", &body);
+    let transport = subprocess(helper, std::time::Duration::MAX);
+    let outcome = transport.consult("vignette");
+    assert_eq!(outcome, Consultation::CallFailed);
+    assert!(!marker.exists());
 }
 
 #[test]

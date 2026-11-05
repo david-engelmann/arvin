@@ -473,6 +473,11 @@ def test_state_files_cross_between_the_binding_and_the_command_line(
 
 
 def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
+    # The consultation stands on a hold record at warn, the
+    # shape a consultation at the held seat writes. The rise
+    # into warn before it is the deterministic rise and
+    # carries null model fields, as DM-18 requires, because
+    # no consultation stands behind a deterministic rise.
     state = str(tmp_path / "state.json")
     document = {
         "format": "deadman-state/1",
@@ -480,8 +485,8 @@ def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
             {
                 "id": "run-a",
                 "registered_at": T0,
-                "interval_seconds": 60,
-                "missed_limit": 5,
+                "proof_interval_seconds": 60,
+                "missed_proof_limit": 5,
                 "soft_ceiling": None,
                 "hard_ceiling": None,
                 "spend_total": 0,
@@ -506,6 +511,16 @@ def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
                         "at": "2031-05-04T12:01:01+00:00",
                         "stage": "warn",
                         "reasons": ["missed proofs"],
+                        "model_name": None,
+                        "model_confidence": None,
+                        "fallback_taken": None,
+                    },
+                    {
+                        "seq": 3,
+                        "kind": "stage",
+                        "at": "2031-05-04T12:01:01+00:00",
+                        "stage": "warn",
+                        "reasons": ["missed proofs"],
                         "model_name": "jev-1.13.0",
                         "model_confidence": 0.5,
                         "fallback_taken": None,
@@ -518,7 +533,7 @@ def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
     }
     Path(state).write_text(json.dumps(document, indent=2) + "\n")
     entries = deadman.log(state, "run-a")
-    expected = record(2, "stage", "2031-05-04T12:01:01+00:00", "warn", ["missed proofs"])
+    expected = record(3, "stage", "2031-05-04T12:01:01+00:00", "warn", ["missed proofs"])
     expected.update(
         {
             "model_name": "jev-1.13.0",
@@ -527,4 +542,8 @@ def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
             "model_score": 0.25,
         }
     )
-    assert entries == [record(1, "registered", T0, "none", []), expected]
+    assert entries == [
+        record(1, "registered", T0, "none", []),
+        record(2, "stage", "2031-05-04T12:01:01+00:00", "warn", ["missed proofs"]),
+        expected,
+    ]
