@@ -828,6 +828,10 @@ fn main() -> ExitCode {
     }
 }
 
+// The eight parameters are the operator inputs of the batch as the
+// command line hands them over, the mode, the corpus and its call
+// shape, the three directory paths, and the helper program with its
+// arguments, and no second caller would share a bundle of them.
 #[allow(clippy::too_many_arguments)]
 fn run_batch(
     mode: &str,
