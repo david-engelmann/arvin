@@ -1,7 +1,7 @@
 //! The setup pins, translated from the Python setup suite the repo
 //! was seeded with, brought up to the current fleet standard. Each
 //! test names the same fact its Python original named, with the
-//! strengthenings the fleet folded in after deadman's Round 1 suite
+//! strengthenings the fleet folded in after arvin's Round 1 suite
 //! was written, three of them landing with this port: the job level
 //! if false pin, the wrong arc label pin, and the CI credential
 //! hygiene pin. Two facts changed with the Rust conversion and the
@@ -29,7 +29,7 @@ fn read(name: &str) -> String {
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("deadman-setup-test-{}-{tag}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("arvin-setup-test-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -48,11 +48,11 @@ fn license_starts_with_mit_heading() {
 }
 
 #[test]
-fn agents_has_marker_and_deadman_annex_below_it() {
+fn agents_has_marker_and_arvin_annex_below_it() {
     let text = read("AGENTS.md");
     assert!(text.contains(MARKER));
     let annex = text.split(MARKER).nth(1).unwrap();
-    assert!(annex.contains("deadman"));
+    assert!(annex.contains("arvin"));
     assert!(annex.contains("CONTRACT.md"));
     assert!(annex.contains("staged kill switch"));
 }

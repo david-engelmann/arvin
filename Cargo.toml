@@ -4,19 +4,19 @@ default-members = [".", "bindings"]
 resolver = "2"
 
 [package]
-name = "deadman"
+name = "arvin"
 version = "0.1.0"
 edition = "2021"
-description = "A dead man's switch that escalates in stages when proofs stop"
+description = "Arvin, a staged kill switch for agent runs that escalates in stages when proofs stop"
 license = "MIT"
 
 [lib]
-name = "deadman"
+name = "arvin"
 path = "src/lib.rs"
 
 [[bin]]
-name = "deadman"
-path = "src/bin/deadman.rs"
+name = "arvin"
+path = "src/bin/arvin.rs"
 
 [[bin]]
 name = "codepoint_scan"

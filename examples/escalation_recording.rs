@@ -42,7 +42,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use deadman::{
+use arvin::{
     Instant, Record, SubprocessTransport, Switch, Value, DE_ESCALATION_BAR, ESCALATION_BAR,
     MODEL_NAME, STAGES,
 };

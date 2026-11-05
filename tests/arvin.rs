@@ -1,4 +1,4 @@
-//! Tests for the deadman staged cutoff, slice 1, translated pin
+//! Tests for the arvin staged cutoff, slice 1, translated pin
 //! for pin from the Python protocol suite of Round 1 at the
 //! counts that suite collects, 101 pins, with the three process
 //! race pins restaged on operating system processes that reenter
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use deadman::{
+use arvin::{
     format_instant, parse_instant, Consultation, Error, FixtureTransport, Instant, ModelTransport,
     Record, SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR,
     FORMAT_NAME, MODEL_NAME, STAGES, TRIGGERS,
@@ -35,10 +35,8 @@ struct TestDir(PathBuf);
 impl TestDir {
     fn new(name: &str) -> TestDir {
         let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!(
-            "deadman-test-{}-{name}-{unique}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("arvin-test-{}-{name}-{unique}", std::process::id()));
         std::fs::create_dir_all(&path).expect("test dir is created");
         TestDir(path)
     }
@@ -164,7 +162,7 @@ fn assert_not_found<T: std::fmt::Debug>(result: Result<T, Error>) {
 }
 
 fn run_cli(args: &[&str], expect: i32) -> (String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_deadman"))
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
         .args(args)
         .output()
         .expect("the binary runs");
@@ -2110,11 +2108,11 @@ fn xval_shipped_fixtures_read_clean() {
 /// plain passing test and does nothing.
 #[test]
 fn race_worker() {
-    let Ok(mode) = std::env::var("DEADMAN_RACE_MODE") else {
+    let Ok(mode) = std::env::var("ARVIN_RACE_MODE") else {
         return;
     };
-    let state = std::env::var("DEADMAN_RACE_STATE").expect("the state path stands");
-    let instant = parse_instant(&std::env::var("DEADMAN_RACE_AT").expect("the instant stands"))
+    let state = std::env::var("ARVIN_RACE_STATE").expect("the state path stands");
+    let instant = parse_instant(&std::env::var("ARVIN_RACE_AT").expect("the instant stands"))
         .expect("the instant parses");
     let switch = Switch::new(PathBuf::from(state));
     let run = text("run-a");
@@ -2127,7 +2125,7 @@ fn race_worker() {
         "prove" => switch.prove(&run, &text("working"), &instant).unwrap(),
         "stage" => {
             let report = switch.stage(&run, &instant).unwrap();
-            let out = std::env::var("DEADMAN_RACE_OUT").expect("the out path stands");
+            let out = std::env::var("ARVIN_RACE_OUT").expect("the out path stands");
             std::fs::write(out, report.stage).unwrap();
         }
         _ => unreachable!(),
@@ -2141,10 +2139,10 @@ fn spawn_workers(dir: &TestDir, mode: &str, count: usize, instant: &Instant) -> 
         let out_path = dir.path().join(format!("worker-out-{index}.txt"));
         let child = Command::new(std::env::current_exe().expect("the test binary stands"))
             .args(["race_worker", "--exact", "--nocapture"])
-            .env("DEADMAN_RACE_MODE", mode)
-            .env("DEADMAN_RACE_STATE", state_path(dir))
-            .env("DEADMAN_RACE_AT", format_instant(instant).unwrap())
-            .env("DEADMAN_RACE_OUT", &out_path)
+            .env("ARVIN_RACE_MODE", mode)
+            .env("ARVIN_RACE_STATE", state_path(dir))
+            .env("ARVIN_RACE_AT", format_instant(instant).unwrap())
+            .env("ARVIN_RACE_OUT", &out_path)
             .spawn()
             .expect("the worker spawns");
         children.push(child);
@@ -2366,7 +2364,7 @@ fn cli_addresses_a_state_path_that_is_not_utf8() {
     let dir = TestDir::new("non-utf8-state");
     let raw_name = std::ffi::OsString::from_vec(b"state-\xff.json".to_vec());
     let state = dir.path().join(raw_name);
-    let output = Command::new(env!("CARGO_BIN_EXE_deadman"))
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
         .arg("--state")
         .arg(&state)
         .args(["register", "run-a"])

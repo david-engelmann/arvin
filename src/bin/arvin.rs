@@ -1,4 +1,4 @@
-//! Command line for deadman, a thin shell over the deadman
+//! Command line for arvin, a thin shell over the arvin
 //! library.
 //!
 //! Every command names the state file first. The clock the
@@ -20,16 +20,16 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use deadman::{
+use arvin::{
     py_repr_str, Error, Instant, Switch, Value, DEFAULT_MISSED_PROOF_LIMIT,
     DEFAULT_PROOF_INTERVAL_SECONDS,
 };
 
 const MAIN_USAGE: &str =
-    "usage: deadman [-h] --state STATE {register,prove,spend,pull,stage,log} ...";
+    "usage: arvin [-h] --state STATE {register,prove,spend,pull,stage,log} ...";
 
 const MAIN_HELP: &str = "\
-usage: deadman [-h] --state STATE {register,prove,spend,pull,stage,log} ...
+usage: arvin [-h] --state STATE {register,prove,spend,pull,stage,log} ...
 
 Watch agent runs and walk them down a staged cutoff as the evidence of a
 runaway grows.
@@ -53,35 +53,35 @@ const COMMANDS: [&str; 6] = ["register", "prove", "spend", "pull", "stage", "log
 fn sub_usage(command: &str) -> &'static str {
     match command {
         "register" => {
-            "usage: deadman register [-h] [--proof-interval PROOF_INTERVAL]\n                        [--missed-limit MISSED_LIMIT]\n                        [--soft-ceiling SOFT_CEILING]\n                        [--hard-ceiling HARD_CEILING]\n                        run"
+            "usage: arvin register [-h] [--proof-interval PROOF_INTERVAL]\n                        [--missed-limit MISSED_LIMIT]\n                        [--soft-ceiling SOFT_CEILING]\n                        [--hard-ceiling HARD_CEILING]\n                        run"
         }
-        "prove" => "usage: deadman prove [-h] [--note NOTE] run",
-        "spend" => "usage: deadman spend [-h] --amount AMOUNT run",
-        "pull" => "usage: deadman pull [-h] run",
-        "stage" => "usage: deadman stage [-h] run",
-        _ => "usage: deadman log [-h] run",
+        "prove" => "usage: arvin prove [-h] [--note NOTE] run",
+        "spend" => "usage: arvin spend [-h] --amount AMOUNT run",
+        "pull" => "usage: arvin pull [-h] run",
+        "stage" => "usage: arvin stage [-h] run",
+        _ => "usage: arvin log [-h] run",
     }
 }
 
 fn sub_help(command: &str) -> &'static str {
     match command {
         "register" => {
-            "usage: deadman register [-h] [--proof-interval PROOF_INTERVAL]\n                        [--missed-limit MISSED_LIMIT]\n                        [--soft-ceiling SOFT_CEILING]\n                        [--hard-ceiling HARD_CEILING]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
+            "usage: arvin register [-h] [--proof-interval PROOF_INTERVAL]\n                        [--missed-limit MISSED_LIMIT]\n                        [--soft-ceiling SOFT_CEILING]\n                        [--hard-ceiling HARD_CEILING]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
         }
         "prove" => {
-            "usage: deadman prove [-h] [--note NOTE] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
+            "usage: arvin prove [-h] [--note NOTE] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
         }
         "spend" => {
-            "usage: deadman spend [-h] --amount AMOUNT run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
+            "usage: arvin spend [-h] --amount AMOUNT run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
         }
         "pull" => {
-            "usage: deadman pull [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "usage: arvin pull [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
         "stage" => {
-            "usage: deadman stage [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "usage: arvin stage [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
         _ => {
-            "usage: deadman log [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "usage: arvin log [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
     }
 }
@@ -407,7 +407,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                     if let Some(value) = inline_value {
                         return Err(parser_error(
                             sub_usage(command),
-                            &format!("deadman {command}"),
+                            &format!("arvin {command}"),
                             format!(
                                 "argument -h/--help: ignored explicit argument {}",
                                 py_repr_str(&value)
@@ -428,7 +428,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                     } else {
                         return Err(parser_error(
                             sub_usage(command),
-                            &format!("deadman {command}"),
+                            &format!("arvin {command}"),
                             format!("argument {option}: expected one argument"),
                         ));
                     };
@@ -442,7 +442,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                             None => {
                                 return Err(parser_error(
                                     sub_usage(command),
-                                    &format!("deadman {command}"),
+                                    &format!("arvin {command}"),
                                     format!(
                                         "argument {option}: invalid int value: {}",
                                         py_repr_str(&raw)
@@ -465,7 +465,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                 Err(message) => {
                     return Err(parser_error(
                         sub_usage(command),
-                        &format!("deadman {command}"),
+                        &format!("arvin {command}"),
                         message,
                     ));
                 }
@@ -527,7 +527,7 @@ fn require(command: &str, args: &SubArgs) -> Result<(), ParserError> {
     } else {
         Err(parser_error(
             sub_usage(command),
-            &format!("deadman {command}"),
+            &format!("arvin {command}"),
             format!(
                 "the following arguments are required: {}",
                 missing.join(", ")
@@ -591,7 +591,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                     if let Some(value) = inline_value {
                         return Ok(parser_fail(
                             MAIN_USAGE,
-                            "deadman",
+                            "arvin",
                             &format!(
                                 "argument -h/--help: ignored explicit argument {}",
                                 py_repr_str(&value)
@@ -619,7 +619,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                     } else {
                         return Ok(parser_fail(
                             MAIN_USAGE,
-                            "deadman",
+                            "arvin",
                             "argument --state: expected one argument",
                         ));
                     }
@@ -632,7 +632,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                     continue;
                 }
                 Err(message) => {
-                    return Ok(parser_fail(MAIN_USAGE, "deadman", &message));
+                    return Ok(parser_fail(MAIN_USAGE, "arvin", &message));
                 }
             }
         }
@@ -653,7 +653,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
         missing.push("command");
         return Ok(parser_fail(
             MAIN_USAGE,
-            "deadman",
+            "arvin",
             &format!(
                 "the following arguments are required: {}",
                 missing.join(", ")
@@ -663,7 +663,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
     if !COMMANDS.contains(&command.as_str()) {
         return Ok(parser_fail(
             MAIN_USAGE,
-            "deadman",
+            "arvin",
             &format!(
                 "argument command: invalid choice: {} (choose from 'register', 'prove', 'spend', 'pull', 'stage', 'log')",
                 py_repr_str(&command)
@@ -682,7 +682,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
     if state_path.is_none() {
         return Ok(parser_fail(
             MAIN_USAGE,
-            "deadman",
+            "arvin",
             "the following arguments are required: --state",
         ));
     }
@@ -690,7 +690,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
     if !extras.is_empty() {
         return Ok(parser_fail(
             MAIN_USAGE,
-            "deadman",
+            "arvin",
             &format!("unrecognized arguments: {}", extras.join(" ")),
         ));
     }
