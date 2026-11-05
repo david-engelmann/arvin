@@ -1,6 +1,6 @@
 # arvin
 
-Arvin is the staged kill switch for agent runs, named for the government camp at Arvin in The Grapes of Wrath, where the staged-out held their standing under rules posted where everyone could read them. It is one staged cutoff with three triggers, an operator pull, a budget ceiling, or a missing progress proof.
+Arvin is a staged cutoff for agent runs. A run keeps its tools, budget, and sandbox only while it keeps proving progress. Three triggers move the stage, an operator pull, a budget ceiling, and missed proofs.
 
 ## What this is
 

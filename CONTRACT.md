@@ -14,7 +14,7 @@ Obligation S5 covers the canonical agents file. The part of AGENTS.md above the 
 
 The full contract for arvin is the first build act of this repo and it lands with the first slice. This stub is not the full contract, and no feature claim for arvin rests on this stub.
 
-Rename note, recorded on 2026-11-05. This repo and the tool it specifies were renamed from deadman to arvin on David's ruling of 2026-11-05. The name is the government camp at Arvin in The Grapes of Wrath, where the staged-out held their standing under rules posted where everyone could read them. The crate and the binary and the Python package carry the new name, and prose that names the tool names arvin. Three identifiers stand unchanged as historical identifiers, the state format name deadman-state/1, the obligation numbers DM-1 to DM-20 together with every citation of them, and the stage vocabulary of DM-1. The words and the numbers of every obligation in this file stand exactly as they stood before the rename.
+Rename note, recorded on 2026-11-05. This repo and the tool it specifies were renamed from deadman to arvin on David's ruling of 2026-11-05. The crate and the binary and the Python package carry the new name, and prose that names the tool names arvin. Three identifiers stand unchanged as historical identifiers, the state format name deadman-state/1, the obligation numbers DM-1 to DM-20 together with every citation of them, and the stage vocabulary of DM-1. The words and the numbers of every obligation in this file stand exactly as they stood before the rename.
 
 ## Round 1 amendment, the staged cutoff, slice 1
 

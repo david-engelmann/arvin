@@ -7,7 +7,7 @@ resolver = "2"
 name = "arvin"
 version = "0.1.0"
 edition = "2021"
-description = "Arvin, a staged kill switch for agent runs that escalates in stages when proofs stop"
+description = "Arvin, a staged cutoff for agent runs that moves in stages on an operator pull, a budget ceiling, or missed proofs"
 license = "MIT"
 
 [lib]
