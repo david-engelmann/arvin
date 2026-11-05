@@ -1,14 +1,14 @@
 [package]
-name = "deadman-bindings"
+name = "arvin-bindings"
 version = "0.1.0"
 edition = "2021"
-description = "The thin Python binding over the deadman crate, carrying no logic of its own"
+description = "The thin Python binding over the arvin crate, carrying no logic of its own"
 license = "MIT"
 
 [lib]
-name = "deadman"
+name = "arvin"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-deadman-core = { package = "deadman", path = ".." }
+arvin-core = { package = "arvin", path = ".." }
 pyo3 = { version = "0.30", features = ["extension-module", "abi3-py39"] }

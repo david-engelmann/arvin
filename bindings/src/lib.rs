@@ -1,4 +1,4 @@
-//! The thin Python binding over the deadman crate.
+//! The thin Python binding over the arvin crate.
 //!
 //! Every rule lives in the library this crate wraps. The
 //! functions here translate Python values into the library
@@ -9,7 +9,7 @@
 //! other threads of the calling process while it waits. A
 //! library refusal becomes a Python exception carrying the
 //! same message text the command line prints, under a subclass
-//! of DeadmanError picked by the error class of the refusal, so
+//! of ArvinError picked by the error class of the refusal, so
 //! a Python caller can tell the classes apart the way a shell
 //! caller tells them apart by exit code.
 //!
@@ -43,18 +43,18 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyInt};
 
-use deadman_core::{
+use arvin_core::{
     Error, Instant, Record, StageReport, Switch, Value, DEFAULT_MISSED_PROOF_LIMIT,
     DEFAULT_PROOF_INTERVAL_SECONDS,
 };
 
-create_exception!(deadman, DeadmanError, pyo3::exceptions::PyException);
-create_exception!(deadman, InvalidNameError, DeadmanError);
-create_exception!(deadman, InvalidRequestError, DeadmanError);
-create_exception!(deadman, NotFoundError, DeadmanError);
-create_exception!(deadman, RefusalError, DeadmanError);
-create_exception!(deadman, CorruptError, DeadmanError);
-create_exception!(deadman, FailureError, DeadmanError);
+create_exception!(arvin, ArvinError, pyo3::exceptions::PyException);
+create_exception!(arvin, InvalidNameError, ArvinError);
+create_exception!(arvin, InvalidRequestError, ArvinError);
+create_exception!(arvin, NotFoundError, ArvinError);
+create_exception!(arvin, RefusalError, ArvinError);
+create_exception!(arvin, CorruptError, ArvinError);
+create_exception!(arvin, FailureError, ArvinError);
 
 /// Translate a library refusal into the Python exception of its
 /// error class, carrying the message the command line prints.
@@ -233,10 +233,10 @@ fn integer_argument(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Value> {
 /// and a parsed instant with no offset is refused downstream
 /// by the library itself as a naive current instant.
 fn instant_argument(text: &str) -> PyResult<Instant> {
-    deadman_core::parse_instant(text).ok_or_else(|| {
+    arvin_core::parse_instant(text).ok_or_else(|| {
         to_py_error(Error::InvalidRequest(format!(
             "the current instant holds unparseable text {}",
-            deadman_core::py_repr_str(text)
+            arvin_core::py_repr_str(text)
         )))
     })
 }
@@ -276,15 +276,15 @@ fn register_dict(
     soft_ceiling: &Value,
     hard_ceiling: &Value,
 ) -> PyResult<Py<PyDict>> {
-    let registered_at = deadman_core::format_instant(now).map_err(to_py_error)?;
+    let registered_at = arvin_core::format_instant(now).map_err(to_py_error)?;
     let proof_interval_seconds =
-        deadman_core::validate_proof_interval(proof_interval).map_err(to_py_error)?;
+        arvin_core::validate_proof_interval(proof_interval).map_err(to_py_error)?;
     let missed_proof_limit =
-        deadman_core::validate_missed_proof_limit(missed_limit).map_err(to_py_error)?;
+        arvin_core::validate_missed_proof_limit(missed_limit).map_err(to_py_error)?;
     let soft_ceiling =
-        deadman_core::validate_ceiling(soft_ceiling, "soft ceiling").map_err(to_py_error)?;
+        arvin_core::validate_ceiling(soft_ceiling, "soft ceiling").map_err(to_py_error)?;
     let hard_ceiling =
-        deadman_core::validate_ceiling(hard_ceiling, "hard ceiling").map_err(to_py_error)?;
+        arvin_core::validate_ceiling(hard_ceiling, "hard ceiling").map_err(to_py_error)?;
     let record = Record {
         seq: 1,
         kind: "registered".to_string(),
@@ -484,8 +484,8 @@ fn log(py: Python<'_>, state: PathBuf, run: &str) -> PyResult<Vec<Py<PyDict>>> {
 }
 
 #[pymodule]
-fn _deadman(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("DeadmanError", m.py().get_type::<DeadmanError>())?;
+fn _arvin(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("ArvinError", m.py().get_type::<ArvinError>())?;
     m.add("InvalidNameError", m.py().get_type::<InvalidNameError>())?;
     m.add(
         "InvalidRequestError",

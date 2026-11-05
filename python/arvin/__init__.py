@@ -1,9 +1,9 @@
-"""deadman, the staged kill switch for agent runs with a Rust core.
+"""arvin, the staged kill switch for agent runs with a Rust core.
 
-This package is the thin Python face of the deadman library.
+This package is the thin Python face of the arvin library.
 Each function calls the library and returns the facts the
 command line reports, as plain dictionaries where the facts
-carry names, and a refusal raises a subclass of DeadmanError
+carry names, and a refusal raises a subclass of ArvinError
 carrying the same message text the command line prints.
 InvalidNameError covers a run id in the wrong shape,
 InvalidRequestError a request value that is not usable,
@@ -27,9 +27,9 @@ operations write and populated on the stage record of a
 consultation.
 """
 
-from ._deadman import (
+from ._arvin import (
     CorruptError,
-    DeadmanError,
+    ArvinError,
     FailureError,
     InvalidNameError,
     InvalidRequestError,
@@ -45,7 +45,7 @@ from ._deadman import (
 
 __all__ = [
     "CorruptError",
-    "DeadmanError",
+    "ArvinError",
     "FailureError",
     "InvalidNameError",
     "InvalidRequestError",

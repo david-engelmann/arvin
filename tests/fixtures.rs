@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use deadman::{Error, Instant, Switch, Value};
+use arvin::{Error, Instant, Switch, Value};
 use sha2::{Digest, Sha256};
 
 fn t0() -> Instant {
@@ -45,7 +45,7 @@ impl TestDir {
     fn new(name: &str) -> TestDir {
         let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
-            "deadman-fixtures-{}-{name}-{unique}",
+            "arvin-fixtures-{}-{name}-{unique}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("test dir is created");

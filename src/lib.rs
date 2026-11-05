@@ -1,4 +1,4 @@
-//! Core logic for deadman, the staged kill switch for agent runs.
+//! Core logic for arvin, the staged kill switch for agent runs.
 //!
 //! One state file holds every run as one JSON document under the
 //! format name deadman-state/1, and the document holds each run
@@ -3656,7 +3656,7 @@ fn write_payload_temp(payload: &str) -> std::io::Result<PathBuf> {
         }
         let count = PAYLOAD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
-            "deadman-judge-{}-{count}-{suffix}",
+            "arvin-judge-{}-{count}-{suffix}",
             std::process::id()
         ));
         match OpenOptions::new().write(true).create_new(true).open(&path) {

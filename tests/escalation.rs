@@ -21,7 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use deadman::{
+use arvin::{
     Consultation, FixtureTransport, Instant, Record, SubprocessTransport, Switch, Value, Verdict,
     DE_ESCALATION_BAR, ESCALATION_BAR, STAGES,
 };
@@ -447,7 +447,7 @@ impl TestDir {
     fn new(name: &str) -> TestDir {
         let unique = COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
-            "deadman-escalation-{}-{name}-{unique}",
+            "arvin-escalation-{}-{name}-{unique}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("test dir is created");

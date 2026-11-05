@@ -1,6 +1,6 @@
 # Contract
 
-Deadman asks whether a runaway agent run can be halted in stages, with every stage named and the reason recorded, before its spend or its actions pass the point where stopping still matters. This file is the stub contract for the setup slice. It states the setup obligations only, and each obligation is stated so it can fail.
+Arvin asks whether a runaway agent run can be halted in stages, with every stage named and the reason recorded, before its spend or its actions pass the point where stopping still matters. This file is the stub contract for the setup slice. It states the setup obligations only, and each obligation is stated so it can fail.
 
 Obligation S1 covers seed integrity. The seed files README.md and LICENSE and .gitignore are present from the first commit, and every later change lands through a pull request rather than a direct push to main. This is covered by inspection of the repository history and by the status section of the README.
 
@@ -12,7 +12,9 @@ Obligation S4 covers synthetic content only. Every fixture and every example in 
 
 Obligation S5 covers the canonical agents file. The part of AGENTS.md above the marked line is identical to the canonical template for the program, and only the repo annex below the marked line differs for deadman. This is covered by tests in the tests folder that pin the SHA-256 digest of the part above the marked line and check the marked line and the annex.
 
-The full contract for deadman is the first build act of this repo and it lands with the first slice. This stub is not the full contract, and no feature claim for deadman rests on this stub.
+The full contract for arvin is the first build act of this repo and it lands with the first slice. This stub is not the full contract, and no feature claim for arvin rests on this stub.
+
+Rename note, recorded on 2026-11-05. This repo and the tool it specifies were renamed from deadman to arvin on David's ruling of 2026-11-05. The crate and the binary and the Python package carry the new name, and prose that names the tool names arvin. Three identifiers stand unchanged as historical identifiers, the state format name deadman-state/1, the obligation numbers DM-1 to DM-20 together with every citation of them, and the stage vocabulary of DM-1. The words and the numbers of every obligation in this file stand exactly as they stood before the rename.
 
 ## Round 1 amendment, the staged cutoff, slice 1
 
@@ -68,7 +70,7 @@ A follow-up to this pass closed the same escape in the integer registration fiel
 
 ## Port amendment, the Rust conversion opening Round 2
 
-Amendment, recorded with the Rust port that opens Round 2. The obligations DM-1 to DM-12 above stand unedited, and the implementation that carries them changes. The Python package of Round 1 is replaced by a Rust crate. The library carries the state file, the signal intake, the deterministic stage evaluator with its hysteresis, the spend accounting, and the decision log. The deadman binary carries the command line with the Python surface, the same subcommands and stdout lines and error lines and exit codes, and its argument parser mirrors the Python parser down to its usage texts and its parser error messages and its acceptance of unambiguous option prefixes. The codepoint scanner is ported from the fleet template in std only Rust. Obligation S2 is amended inside its own paragraph above, in the form the conversion of deadbolt set, with the program language ruling of 2026-11-02 named as its reason.
+Amendment, recorded with the Rust port that opens Round 2. The obligations DM-1 to DM-12 above stand unedited, and the implementation that carries them changes. The Python package of Round 1 is replaced by a Rust crate. The library carries the state file, the signal intake, the deterministic stage evaluator with its hysteresis, the spend accounting, and the decision log. The arvin binary carries the command line with the Python surface, the same subcommands and stdout lines and error lines and exit codes, and its argument parser mirrors the Python parser down to its usage texts and its parser error messages and its acceptance of unambiguous option prefixes. The codepoint scanner is ported from the fleet template in std only Rust. Obligation S2 is amended inside its own paragraph above, in the form the conversion of deadbolt set, with the program language ruling of 2026-11-02 named as its reason.
 
 The equivalence standard for the port is threefold. The Round 1 test suite is translated pin for pin into the Rust suite, at the counts the Python suite collects on main, 101 protocol pins and 21 setup pins, counted by collection before the port was written. Ten state files written by the Python implementation stand frozen in the tests fixtures folder with a manifest that records their hashes and their decision log lines and their stage truths at named instants, and the Rust suite reads each one and checks the log and the stage against the record, replays every production operation and compares the written state byte for byte, and continues three of the fixtures under Rust against continuation files the Python implementation produced from the same fixtures. A fixed battery of command line shapes is driven side by side under the Python implementation from main and under the Rust port, with exit codes and stdout and stderr and the state bytes compared shape by shape, and the comparison is recorded in the gate report of the port pull request.
 
