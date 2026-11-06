@@ -2898,6 +2898,7 @@ fn the_vignette_at_the_fall_seat_with_a_host_context() {
             "The soft ceiling stands at 1000 and the spend stands below it by 960.",
             "No hard ceiling stands.",
             "The standing clear streak stands at 1.",
+            "This evaluation is the second of the two consecutive clean evaluations the fall requires.",
             "The last stage records in sequence order stand as follows.",
             "A stage record at stage throttle naming missed proofs stands at an age of 2 whole seconds.",
             "Since the run entered stage throttle it has recorded 1 proof record and 0 spend records.",
@@ -2939,6 +2940,7 @@ fn the_vignette_renders_a_standing_hard_ceiling_byte_for_byte() {
             "No soft ceiling stands.",
             "The hard ceiling stands at 1000 and the spend stands below it by 960.",
             "The standing clear streak stands at 1.",
+            "This evaluation is the second of the two consecutive clean evaluations the fall requires.",
             "The last stage records in sequence order stand as follows.",
             "A stage record at stage throttle naming missed proofs stands at an age of 2 whole seconds.",
             "Since the run entered stage throttle it has recorded 1 proof record and 0 spend records.",
@@ -2990,6 +2992,45 @@ fn the_vignette_renders_only_the_last_five_stage_records() {
         .join("\n")
     );
     assert_eq!(shown[0], expected);
+}
+
+#[test]
+fn the_completion_statement_stands_nowhere_but_the_fall_seat() {
+    let sentence =
+        "This evaluation is the second of the two consecutive clean evaluations the fall requires.";
+    // The held seat. The shown text carries the streak line
+    // and no completion statement, because the evaluation
+    // being judged completes nothing there.
+    let dir = TestDir::new("model-completion-held");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    let shown = transport.shown();
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].contains("The standing clear streak stands at 0."));
+    assert!(!shown[0].contains(sentence));
+    // The fall seat. The same sentence stands in the shown
+    // text exactly once, immediately after the streak line.
+    let dir = TestDir::new("model-completion-fall");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 60, 5, Some(1000), None);
+    switch.spend(&text("run-a"), &int(40), &at(5)).unwrap();
+    switch.stage(&text("run-a"), &at(121)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(121))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(122)).unwrap();
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    let shown = transport.shown();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(shown[0].matches(sentence).count(), 1);
+    let adjacent = format!("The standing clear streak stands at 1.\n{sentence}");
+    assert!(shown[0].contains(&adjacent));
 }
 
 #[test]

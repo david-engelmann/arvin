@@ -3175,17 +3175,25 @@ fn counted(count: usize, singular: &str, plural: &str) -> String {
 
 /// Render the vignette of DM-14, the picture the model
 /// receives. The rendering is a pure function of the run and
-/// the evaluation instant and the optional host context, and
-/// the suite pins it byte for byte. What never crosses stands
-/// in DM-14, the run id and the state path and any part of
-/// any other run and the confidence bars and any credential
-/// or transport detail.
+/// the evaluation instant and the seat the evaluation stands
+/// at and the optional host context, and the suite pins it
+/// byte for byte. Where the seat is the fall decision seat,
+/// the facts gain the completion statement of DM-14 as
+/// amended in Round 4, that this evaluation is the second of
+/// the two consecutive clean evaluations the fall requires,
+/// rendered immediately after the streak line and nowhere
+/// else, because the seat is decided before the rendering
+/// and the statement is true only where that seat stands.
+/// What never crosses stands in DM-14, the run id and the
+/// state path and any part of any other run and the
+/// confidence bars and any credential or transport detail.
 fn render_vignette(
     run: &Run,
     now: &Instant,
     warranted: usize,
     reasons: &[&str],
     missed: i128,
+    seat: &Seat,
     host_context: Option<&str>,
 ) -> String {
     let mut lines: Vec<String> = Vec::new();
@@ -3244,6 +3252,9 @@ fn render_vignette(
         "The standing clear streak stands at {}.",
         int_text(&run.clear_streak)
     ));
+    if matches!(seat, Seat::Fall) {
+        lines.push("This evaluation is the second of the two consecutive clean evaluations the fall requires.".to_string());
+    }
     let stage_records: Vec<&Record> = run
         .log
         .iter()
@@ -4217,7 +4228,8 @@ impl Switch {
             let (missed, vignette) = {
                 let run = &document.runs[index];
                 let missed = missed_proofs(run, now)?;
-                let vignette = render_vignette(run, now, warranted, &reasons, missed, context);
+                let vignette =
+                    render_vignette(run, now, warranted, &reasons, missed, &seat, context);
                 (missed, vignette)
             };
             let fields = consultation_fields(transport.consult(&vignette), pinned);
