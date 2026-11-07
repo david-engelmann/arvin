@@ -54,7 +54,7 @@ stage none
 
 ### Register, prove, and read the stage
 
-Every command names the state file first. A run is registered once, with the ceilings its spend is judged against, and a proof is a short note that is recorded and never judged.
+Every command names the state file first. A run is registered once, with the ceilings its spend is judged against. A proof records an instant. Its optional note is validated but not stored or judged.
 
 ```
 $ arvin --state usage.json register --soft-ceiling 100 --hard-ceiling 200 usage-run
