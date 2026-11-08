@@ -13,7 +13,7 @@
 //! a Python caller can tell the classes apart the way a shell
 //! caller tells them apart by exit code.
 //!
-//! The one surface the command line does not have is the
+//! The surface the command line does not have is the
 //! instant. The command line reads the wall clock and offers no
 //! override, and the library takes the current instant as an
 //! argument to every operation but the log read. The binding
@@ -26,25 +26,29 @@
 //! The register call returns the stored facts of the run it
 //! opens as a plain dictionary, the stage call returns its
 //! report as a plain dictionary carrying the stage name and
-//! the reasons the command line prints under it, the spend
+//! the reasons the command line prints under it, and the
+//! stage_with_model call returns the same report for an
+//! evaluation that consulted a model under DM-20, the spend
 //! call returns the accumulated spend, the pull call returns
 //! the stage name, and the log call returns the decision
 //! records as plain dictionaries carrying every field the
-//! records stand in the state file with, the reserved model
-//! fields among them. Those fields stand null in every record
-//! this slice writes and the library reader refuses a record
-//! carrying a value in one of them, so they stand in the
-//! dictionaries as None exactly as they stand in the file.
+//! records stand in the state file with, the model fields
+//! among them. Those fields stand in the dictionaries exactly
+//! as they stand in the file, null in every record the
+//! deterministic calls write and carrying the consultation
+//! pattern of DM-17 in a record the model call appends.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyInt};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt};
 
 use arvin_core::{
-    Error, Instant, Record, StageReport, Switch, Value, DEFAULT_MISSED_PROOF_LIMIT,
+    Consultation, Error, FixtureTransport, Instant, Record, StageReport, SubprocessTransport,
+    Switch, Value, Verdict, DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT,
     DEFAULT_PROOF_INTERVAL_SECONDS,
 };
 
@@ -467,6 +471,270 @@ fn stage(py: Python<'_>, state: PathBuf, run: &str, now: &str) -> PyResult<Py<Py
     stage_dict(py, &report)
 }
 
+/// Refuse a fixture dictionary shape in the invalid request
+/// class, with the message in the library voice, because a
+/// malformed fixture dictionary is a caller error of the same
+/// kind the library refuses, and the typed exception carries
+/// the refusal the way every library refusal crosses.
+fn fixture_refusal(message: String) -> PyErr {
+    to_py_error(Error::InvalidRequest(message))
+}
+
+/// Translate a fixture dictionary into the one consultation
+/// it scripts. The dictionary stands in one of the two forms
+/// of DM-20, the verdict form carrying a model name, a
+/// verdict label, a confidence, and a score, and the fallback
+/// form carrying a model name and a fallback class, and the
+/// transport stands pinned to the name the dictionary carries.
+/// A shape outside the two forms is refused here as an
+/// invalid request in the library voice. The model name shape
+/// itself is not judged here, because the library refuses a
+/// transport pinned outside the recordable shape at entry,
+/// and the confidence and score ranges are not judged here,
+/// because the classification of DM-16 lands an out of shape
+/// value in the malformed reply class, and a verdict value
+/// judged at this layer could disagree with the record the
+/// library would write for the same scripted consultation.
+fn fixture_consultation(value: &Bound<'_, PyAny>) -> PyResult<Consultation> {
+    let dict = value
+        .cast::<PyDict>()
+        .map_err(|_| fixture_refusal("a fixture stands as no dictionary".to_string()))?;
+    let known = ["model_name", "verdict", "confidence", "score", "fallback"];
+    for key in dict.keys() {
+        match key.extract::<String>() {
+            Ok(name) => {
+                if !known.contains(&name.as_str()) {
+                    return Err(fixture_refusal(format!(
+                        "a fixture carries the key {} outside the two forms",
+                        arvin_core::py_repr_str(&name)
+                    )));
+                }
+            }
+            Err(_) => {
+                return Err(fixture_refusal(
+                    "a fixture carries a key that stands as no name".to_string(),
+                ));
+            }
+        }
+    }
+    let verdict_item = dict.get_item("verdict")?;
+    let fallback_item = dict.get_item("fallback")?;
+    match (&verdict_item, &fallback_item) {
+        (Some(_), Some(_)) => {
+            return Err(fixture_refusal(
+                "a fixture carries the verdict and the fallback forms together".to_string(),
+            ));
+        }
+        (None, None) => {
+            return Err(fixture_refusal(
+                "a fixture carries neither the verdict nor the fallback form".to_string(),
+            ));
+        }
+        _ => {}
+    }
+    let name_item = dict.get_item("model_name")?.ok_or_else(|| {
+        fixture_refusal("a fixture stands without the model name it stands pinned to".to_string())
+    })?;
+    let model_name: String = name_item.extract()?;
+    if let Some(verdict_value) = verdict_item {
+        let label: String = verdict_value.extract()?;
+        let verdict = match label.as_str() {
+            "hold" => Verdict::Hold,
+            "escalate" => Verdict::Escalate,
+            "de-escalate" => Verdict::DeEscalate,
+            _ => {
+                return Err(fixture_refusal(format!(
+                    "a fixture names the verdict {} outside the three verdicts",
+                    arvin_core::py_repr_str(&label)
+                )));
+            }
+        };
+        let confidence_item = dict.get_item("confidence")?.ok_or_else(|| {
+            fixture_refusal("a fixture verdict stands without its confidence".to_string())
+        })?;
+        let score_item = dict.get_item("score")?.ok_or_else(|| {
+            fixture_refusal("a fixture verdict stands without its score".to_string())
+        })?;
+        if confidence_item.is_instance_of::<PyBool>() {
+            return Err(PyTypeError::new_err(
+                "confidence must be a number, not a boolean",
+            ));
+        }
+        if score_item.is_instance_of::<PyBool>() {
+            return Err(PyTypeError::new_err(
+                "score must be a number, not a boolean",
+            ));
+        }
+        let confidence: f64 = confidence_item.extract()?;
+        let score: f64 = score_item.extract()?;
+        Ok(Consultation::Verdict {
+            model_name,
+            verdict,
+            confidence,
+            score,
+        })
+    } else {
+        let class_value = fallback_item.expect("one form stands present");
+        let class: String = class_value.extract()?;
+        match class.as_str() {
+            "abstention" => Ok(Consultation::Abstention { model_name }),
+            "call failed" => Ok(Consultation::CallFailed),
+            "silence" => Ok(Consultation::Silence),
+            "malformed reply" => Ok(Consultation::MalformedReply),
+            _ => Err(fixture_refusal(format!(
+                "a fixture names the fallback {} outside the four classes",
+                arvin_core::py_repr_str(&class)
+            ))),
+        }
+    }
+}
+
+/// Translate a judge timeout argument into the deadline the
+/// subprocess transport holds. An integer is a whole number of
+/// seconds and a float is a number of seconds with a fraction,
+/// and each refuses under the wording the surfaces share where
+/// the value does not stand as a positive number of seconds
+/// the transport can hold. A boolean is refused as a type
+/// error naming the argument, as the binding refuses a boolean
+/// wherever a number belongs, and a value of any other kind
+/// fails in translation.
+fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
+    if value.is_instance_of::<PyBool>() {
+        return Err(PyTypeError::new_err(
+            "judge_timeout must be a number, not a boolean",
+        ));
+    }
+    let refusal = |rendered: &Value| {
+        to_py_error(Error::InvalidRequest(format!(
+            "judge timeout {} does not stand as a positive number of seconds the \
+             transport can hold",
+            arvin_core::py_printable(rendered)
+        )))
+    };
+    if value.is_instance_of::<PyInt>() {
+        let whole = integer_value(value)?;
+        return match &whole {
+            Value::Int(number) if *number >= 1 && *number <= u64::MAX as i128 => {
+                Ok(Duration::from_secs(*number as u64))
+            }
+            _ => Err(refusal(&whole)),
+        };
+    }
+    if value.is_instance_of::<PyFloat>() {
+        let number: f64 = value.extract()?;
+        if number.is_finite() && number > 0.0 && number <= u64::MAX as f64 {
+            return Ok(Duration::from_secs_f64(number));
+        }
+        return Err(refusal(&Value::Float(number)));
+    }
+    Err(PyTypeError::new_err("judge_timeout must be a number"))
+}
+
+/// Evaluate a run at the instant with a model consulted under
+/// DM-20, and return its report as a plain dictionary carrying
+/// the stage name and its reasons, the same report the stage
+/// call returns.
+///
+/// The judge argument names a helper program the subprocess
+/// transport calls, judge_args carries the arguments handed to
+/// the helper before the payload flag as a list or tuple of
+/// strings, and judge_timeout bounds the call in seconds as an
+/// integer or a float and resolves from the published default
+/// when it is not given. The fixture argument scripts the one
+/// consultation as a dictionary in the verdict form or the
+/// fallback form, for a caller that drives a recorded or
+/// constructed answer with no helper standing behind it, and
+/// exactly one of the judge and fixture forms may stand named
+/// on one call. The host_context argument is host supplied
+/// context rendered into the picture the model judges, handed
+/// to the library untouched.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (state, run, now, judge = None, judge_args = None, judge_timeout = None, fixture = None, host_context = None))]
+fn stage_with_model(
+    py: Python<'_>,
+    state: PathBuf,
+    run: &str,
+    now: &str,
+    judge: Option<String>,
+    judge_args: Option<&Bound<'_, PyAny>>,
+    judge_timeout: Option<&Bound<'_, PyAny>>,
+    fixture: Option<&Bound<'_, PyAny>>,
+    host_context: Option<&str>,
+) -> PyResult<Py<PyDict>> {
+    if judge.is_some() && fixture.is_some() {
+        return Err(fixture_refusal(
+            "exactly one judge form may stand named on one call".to_string(),
+        ));
+    }
+    if judge.is_none() {
+        if judge_args.is_some() {
+            return Err(fixture_refusal(
+                "a judge argument stands named with no judge program to carry it".to_string(),
+            ));
+        }
+        if judge_timeout.is_some() {
+            return Err(fixture_refusal(
+                "a judge timeout stands named with no judge program to carry it".to_string(),
+            ));
+        }
+    }
+    let pinned_name = match &fixture {
+        Some(value) => {
+            let dict = value
+                .cast::<PyDict>()
+                .map_err(|_| fixture_refusal("a fixture stands as no dictionary".to_string()))?;
+            match dict.get_item("model_name")? {
+                Some(item) => Some(item.extract::<String>()?),
+                None => None,
+            }
+        }
+        None => None,
+    };
+    let consultation = match fixture {
+        Some(value) => Some(fixture_consultation(value)?),
+        None => None,
+    };
+    let timeout = match judge_timeout {
+        Some(value) => Some(timeout_argument(value)?),
+        None => None,
+    };
+    let arguments: Vec<String> = match judge_args {
+        Some(value) => value.extract()?,
+        None => Vec::new(),
+    };
+    let now = instant_argument(now)?;
+    let switch = Switch::new(state);
+    let run_value = Value::Str(run.to_string());
+    // The transport stands built inside the detached call,
+    // because a reference to a transport trait object is not
+    // itself fit to cross into the detached closure, while the
+    // two transports the surface builds are plain values that
+    // cross whole and lend their reference inside it.
+    let report = py
+        .detach(|| {
+            let subprocess_transport;
+            let fixture_transport;
+            let transport: Option<&dyn arvin_core::ModelTransport> = if let Some(program) = judge {
+                subprocess_transport = SubprocessTransport::new(
+                    PathBuf::from(program),
+                    arguments,
+                    timeout.unwrap_or(Duration::from_secs(DEFAULT_JUDGE_TIMEOUT_SECONDS)),
+                );
+                Some(&subprocess_transport)
+            } else if let Some(consultation) = consultation {
+                fixture_transport =
+                    FixtureTransport::new(pinned_name.as_deref().unwrap_or(""), vec![consultation]);
+                Some(&fixture_transport)
+            } else {
+                None
+            };
+            switch.stage_with_model(&run_value, &now, transport, host_context)
+        })
+        .map_err(to_py_error)?;
+    stage_dict(py, &report)
+}
+
 /// Return the recorded decision log of a run, in order, as
 /// plain dictionaries.
 ///
@@ -500,6 +768,7 @@ fn _arvin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spend, m)?)?;
     m.add_function(wrap_pyfunction!(pull, m)?)?;
     m.add_function(wrap_pyfunction!(stage, m)?)?;
+    m.add_function(wrap_pyfunction!(stage_with_model, m)?)?;
     m.add_function(wrap_pyfunction!(log, m)?)?;
     Ok(())
 }

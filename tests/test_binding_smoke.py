@@ -546,3 +546,125 @@ def test_log_carries_the_model_fields_of_a_consultation_record(tmp_path):
         record(2, "stage", "2031-05-04T12:01:01+00:00", "warn", ["missed proofs"]),
         expected,
     ]
+
+
+T_WARN = "2031-05-04T12:01:01+00:00"
+
+
+def seat_at_warn(state):
+    arvin.register(state, "run-a", T0)
+    report = arvin.stage(state, "run-a", T_WARN)
+    assert report == {
+        "run": "run-a",
+        "stage": "warn",
+        "reasons": ["missed proofs"],
+    }
+
+
+def test_stage_with_model_fixture_verdict_applies_its_pattern(tmp_path):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    report = arvin.stage_with_model(
+        state,
+        "run-a",
+        T_WARN,
+        fixture={
+            "model_name": "jev-1.13.0",
+            "verdict": "escalate",
+            "confidence": 0.77,
+            "score": 5 / 9,
+        },
+    )
+    assert report == {
+        "run": "run-a",
+        "stage": "throttle",
+        "reasons": ["missed proofs"],
+    }
+    entries = arvin.log(state, "run-a")
+    last = entries[-1]
+    assert last["model_name"] == "jev-1.13.0"
+    assert last["model_verdict"] == "escalate"
+    assert last["model_confidence"] == 0.77
+    assert last["model_score"] == 5 / 9
+    assert last["fallback_taken"] is None
+    assert last["stage"] == "throttle"
+    assert stored_run(state)["stage"] == "throttle"
+
+
+def test_stage_with_model_fixture_fallback_records_its_class(tmp_path):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    report = arvin.stage_with_model(
+        state,
+        "run-a",
+        T_WARN,
+        fixture={"model_name": "jev-1.13.0", "fallback": "silence"},
+    )
+    assert report == {
+        "run": "run-a",
+        "stage": "warn",
+        "reasons": ["missed proofs"],
+    }
+    last = arvin.log(state, "run-a")[-1]
+    assert last["model_name"] == "jev-1.13.0"
+    assert last["fallback_taken"] == "silence"
+    assert last["model_verdict"] is None
+    assert last["model_confidence"] is None
+    assert last["model_score"] is None
+
+
+def test_stage_with_model_refuses_two_judge_forms_together(tmp_path):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as both:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge="a-helper",
+            fixture={"model_name": "jev-1.13.0", "fallback": "silence"},
+        )
+    assert str(both.value) == (
+        "exactly one judge form may stand named on one call"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+
+def test_stage_with_model_refuses_a_label_outside_the_three(tmp_path):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as label:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            fixture={
+                "model_name": "jev-1.13.0",
+                "verdict": "freeze",
+                "confidence": 0.5,
+                "score": 0.5,
+            },
+        )
+    assert "outside the three verdicts" in str(label.value)
+    assert len(arvin.log(state, "run-a")) == 2
+
+
+def test_stage_with_model_host_context_without_a_transport_refuses(
+    tmp_path,
+):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as context:
+        arvin.stage_with_model(
+            state, "run-a", T_WARN, host_context="a note from the host"
+        )
+    assert str(context.value) == (
+        "a host context stands supplied with no model transport "
+        "to carry it"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
