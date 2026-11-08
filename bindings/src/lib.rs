@@ -629,14 +629,18 @@ fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     }
     if value.is_instance_of::<PyFloat>() {
         let number: f64 = value.extract()?;
-        // The guard compares in whole seconds the duration can
-        // hold, because the float nearest above the largest
-        // whole second count rounds to exactly 2 to the 64th
-        // and a guard written against the maximum as a float
-        // admits it, while the duration holds at most one
-        // second less.
-        if number.is_finite() && number > 0.0 && number.trunc() <= (u64::MAX - 1) as f64 {
-            return Ok(Duration::from_secs_f64(number));
+        // The conversion itself judges the range, because a
+        // guard written in floats cannot see the boundary. The
+        // float nearest above the largest whole second count
+        // rounds to exactly 2 to the 64th, and every comparison
+        // of that value against a float bound built from the
+        // maximum compares equal, while the duration holds at
+        // most one second less. The checked conversion refuses
+        // exactly the values the duration cannot hold.
+        if number > 0.0 {
+            if let Ok(duration) = Duration::try_from_secs_f64(number) {
+                return Ok(duration);
+            }
         }
         return Err(refusal(&Value::Float(number)));
     }
