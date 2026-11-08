@@ -133,6 +133,14 @@ pub const MODEL_NAME_MAX: usize = 128;
 /// under DM-14, counted in characters.
 pub const HOST_CONTEXT_MAX: usize = 2000;
 
+/// The default deadline of a judge consultation, in seconds,
+/// standing published beside the landed defaults so neither
+/// surface restates the number and the surfaces cannot drift
+/// apart on it. Its value is the 10 seconds every in-repo
+/// driver already constructs, and the Round 5 amendment names
+/// it a contract visible fact in the manner of the bars.
+pub const DEFAULT_JUDGE_TIMEOUT_SECONDS: u64 = 10;
+
 /// The verdict labels of DM-17, in the order the doctrine
 /// names them.
 const VERDICT_LABELS: [&str; 3] = ["hold", "escalate", "de-escalate"];
