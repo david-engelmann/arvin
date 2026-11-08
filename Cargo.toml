@@ -7,7 +7,7 @@ resolver = "2"
 name = "arvin"
 version = "0.1.0"
 edition = "2021"
-description = "Arvin, a staged cutoff for agent runs that moves in stages on an operator pull, a budget ceiling, or missed proofs"
+description = "A staged cutoff for agent runs, where a run keeps its tools, budget, and sandbox only while it keeps proving progress. Three triggers move the stage, an operator pull, a budget ceiling, and missed proofs."
 license = "MIT"
 
 [lib]
