@@ -653,6 +653,38 @@ def test_stage_with_model_refuses_a_label_outside_the_three(tmp_path):
     assert len(arvin.log(state, "run-a")) == 2
 
 
+def test_stage_with_model_fixture_shape_edges_refuse(tmp_path):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as carried:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            fixture={
+                "model_name": "jev-1.13.0",
+                "fallback": "silence",
+                "confidence": 0.5,
+            },
+        )
+    assert "verdict form" in str(carried.value)
+    assert len(arvin.log(state, "run-a")) == 2
+
+    with pytest.raises(arvin.InvalidRequestError) as overflow:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge="a-helper",
+            judge_timeout=float(2**64),
+        )
+    assert "does not stand as a positive number of seconds" in str(
+        overflow.value
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+
 def test_stage_with_model_host_context_without_a_transport_refuses(
     tmp_path,
 ):

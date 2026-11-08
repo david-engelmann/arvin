@@ -574,6 +574,13 @@ fn fixture_consultation(value: &Bound<'_, PyAny>) -> PyResult<Consultation> {
             score,
         })
     } else {
+        for field in ["confidence", "score"] {
+            if dict.get_item(field)?.is_some() {
+                return Err(fixture_refusal(format!(
+                    "a fixture fallback carries the {field} of the verdict form"
+                )));
+            }
+        }
         let class_value = fallback_item.expect("one form stands present");
         let class: String = class_value.extract()?;
         match class.as_str() {
@@ -622,7 +629,13 @@ fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     }
     if value.is_instance_of::<PyFloat>() {
         let number: f64 = value.extract()?;
-        if number.is_finite() && number > 0.0 && number <= u64::MAX as f64 {
+        // The guard compares in whole seconds the duration can
+        // hold, because the float nearest above the largest
+        // whole second count rounds to exactly 2 to the 64th
+        // and a guard written against the maximum as a float
+        // admits it, while the duration holds at most one
+        // second less.
+        if number.is_finite() && number > 0.0 && number.trunc() <= (u64::MAX - 1) as f64 {
             return Ok(Duration::from_secs_f64(number));
         }
         return Err(refusal(&Value::Float(number)));
