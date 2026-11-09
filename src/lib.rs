@@ -141,6 +141,14 @@ pub const HOST_CONTEXT_MAX: usize = 2000;
 /// it a contract visible fact in the manner of the bars.
 pub const DEFAULT_JUDGE_TIMEOUT_SECONDS: u64 = 10;
 
+/// The widest judge timeout value the surfaces hold whole
+/// while an out of range value crosses to its refusal, one
+/// more than the widest duration a transport can hold in
+/// whole seconds. A value at or past this ceiling refuses
+/// without being held, so no surface reads a number it
+/// cannot hold to name the value it refuses.
+pub const TIMEOUT_WHOLE_CEILING: u128 = 18446744073709551616;
+
 /// The verdict labels of DM-17, in the order the doctrine
 /// names them.
 const VERDICT_LABELS: [&str; 3] = ["hold", "escalate", "de-escalate"];

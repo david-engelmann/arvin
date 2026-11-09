@@ -700,3 +700,165 @@ def test_stage_with_model_host_context_without_a_transport_refuses(
         "to carry it"
     )
     assert len(arvin.log(state, "run-a")) == 2
+
+
+def seat_at_the_fall_decision(state):
+    # A run standing at throttle on a standing clear streak of
+    # one, where the next clean evaluation warrants warn and so
+    # stands at the fall decision seat of DM-13, the seat a
+    # scripted consultation can endorse a step down from.
+    arvin.register(
+        state, "run-a", T0, proof_interval=3600, missed_limit=5
+    )
+    arvin.prove(state, "run-a", "2031-05-04T12:30:00+00:00")
+    report = arvin.stage(state, "run-a", "2031-05-04T14:31:00+00:00")
+    assert report == {
+        "run": "run-a",
+        "stage": "throttle",
+        "reasons": ["missed proofs"],
+    }
+    arvin.prove(state, "run-a", "2031-05-04T14:32:00+00:00")
+    report = arvin.stage(state, "run-a", "2031-05-04T14:33:00+00:00")
+    assert report == {
+        "run": "run-a",
+        "stage": "throttle",
+        "reasons": [],
+    }
+
+
+def test_stage_with_model_without_a_transport_consults_nothing(tmp_path):
+    # The plain call with no judge form named is the library no
+    # transport case, judged at the fall decision seat after
+    # the evaluation the seat helper's 14:33 stage call stands
+    # at. The deterministic evaluation of DM-9 falls on the
+    # second consecutive clean evaluation, so the call at
+    # 14:35, the second clean evaluation after the 14:32
+    # proof, steps the stage down to warn on the deterministic
+    # rule alone. A consultation in the same position stands
+    # where the fall could have been endorsed instead, and the
+    # record the call leaves carries the consultation fields
+    # as null where a consulted record carries the model name,
+    # so the record's shape is what proves nothing stood
+    # consulted.
+    state = str(tmp_path / "state.json")
+    seat_at_the_fall_decision(state)
+    arvin.prove(state, "run-a", "2031-05-04T14:34:00+00:00")
+
+    report = arvin.stage_with_model(
+        state, "run-a", "2031-05-04T14:35:00+00:00"
+    )
+    assert report == {
+        "run": "run-a",
+        "stage": "warn",
+        "reasons": [],
+    }
+    last = arvin.log(state, "run-a")[-1]
+    assert last["model_name"] is None
+    assert last["model_verdict"] is None
+    assert last["model_confidence"] is None
+    assert last["model_score"] is None
+    assert last["fallback_taken"] is None
+
+
+def test_stage_with_model_fixture_without_a_model_name_refuses(tmp_path):
+    # Both dictionary forms carry the model name they stand
+    # pinned to, and a dictionary without one is refused in
+    # the surface message before any state changes, at a seat
+    # and off one alike, because the refusal judges the
+    # dictionary and not the evaluation.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as verdict_form:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            fixture={
+                "verdict": "escalate",
+                "confidence": 0.77,
+                "score": 0.5,
+            },
+        )
+    assert str(verdict_form.value) == (
+        "a fixture stands without the model name it stands pinned to"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+    with pytest.raises(arvin.InvalidRequestError) as fallback_form:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            fixture={"fallback": "silence"},
+        )
+    assert str(fallback_form.value) == (
+        "a fixture stands without the model name it stands pinned to"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+
+def test_stage_with_model_fixture_values_of_the_wrong_type_refuse(
+    tmp_path,
+):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    cases = [
+        (
+            {
+                "model_name": 5,
+                "verdict": "hold",
+                "confidence": 0.5,
+                "score": 0.5,
+            },
+            "model name",
+        ),
+        (
+            {
+                "model_name": "jev-1.13.0",
+                "verdict": 5,
+                "confidence": 0.5,
+                "score": 0.5,
+            },
+            "verdict",
+        ),
+        (
+            {
+                "model_name": "jev-1.13.0",
+                "verdict": None,
+                "confidence": 0.5,
+                "score": 0.5,
+            },
+            "verdict",
+        ),
+        (
+            {"model_name": "jev-1.13.0", "fallback": 5},
+            "fallback",
+        ),
+        (
+            {
+                "model_name": "jev-1.13.0",
+                "verdict": "hold",
+                "confidence": "high",
+                "score": 0.5,
+            },
+            "confidence",
+        ),
+        (
+            {
+                "model_name": "jev-1.13.0",
+                "verdict": "hold",
+                "confidence": 0.5,
+                "score": "low",
+            },
+            "score",
+        ),
+    ]
+    for fixture, field in cases:
+        with pytest.raises(arvin.InvalidRequestError) as raised:
+            arvin.stage_with_model(
+                state, "run-a", T_WARN, fixture=fixture
+            )
+        assert field in str(raised.value), str(raised.value)
+        assert len(arvin.log(state, "run-a")) == 2

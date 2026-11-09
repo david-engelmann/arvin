@@ -25,7 +25,7 @@ use arvin::{
     consultation_from_reply_body, format_instant, py_float_repr, py_printable, py_repr_str, Error,
     FixtureTransport, Instant, ModelTransport, SubprocessTransport, Switch, Value,
     DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
-    MODEL_NAME,
+    MODEL_NAME, TIMEOUT_WHOLE_CEILING,
 };
 
 const MAIN_USAGE: &str =
@@ -877,6 +877,9 @@ fn stage_command(
 /// invalid request where the value does not stand as a
 /// positive number of seconds the transport duration can
 /// hold, with the message naming the value and the condition.
+/// A value standing at or past the surfaces' whole ceiling
+/// refuses without being held, because no surface reads a
+/// number it cannot hold to name the value it refuses.
 fn judge_timeout_duration(value: &Value) -> Result<Duration, Error> {
     let seconds = match value {
         Value::Int(number) if *number >= 1 && *number <= u64::MAX as i128 => Some(*number as u64),
@@ -887,8 +890,25 @@ fn judge_timeout_duration(value: &Value) -> Result<Duration, Error> {
         None => Err(Error::InvalidRequest(format!(
             "judge timeout {} does not stand as a positive number of seconds the \
              transport can hold",
-            py_printable(value)
+            timeout_printable(value)
         ))),
+    }
+}
+
+/// The rendering of a judge timeout value for its refusal.
+/// A value standing at or past the whole ceiling renders as
+/// the ceiling itself, the boundary the refusal names,
+/// because the value crossed no surface whole. Every other
+/// value renders as itself.
+fn timeout_printable(value: &Value) -> String {
+    let past_ceiling = match value {
+        Value::Int(number) => *number >= 1 && *number as u128 >= TIMEOUT_WHOLE_CEILING,
+        _ => false,
+    };
+    if past_ceiling {
+        TIMEOUT_WHOLE_CEILING.to_string()
+    } else {
+        py_printable(value)
     }
 }
 

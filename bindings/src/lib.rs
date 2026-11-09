@@ -49,7 +49,7 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt};
 use arvin_core::{
     Consultation, Error, FixtureTransport, Instant, Record, StageReport, SubprocessTransport,
     Switch, Value, Verdict, DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT,
-    DEFAULT_PROOF_INTERVAL_SECONDS,
+    DEFAULT_PROOF_INTERVAL_SECONDS, TIMEOUT_WHOLE_CEILING,
 };
 
 create_exception!(arvin, ArvinError, pyo3::exceptions::PyException);
@@ -495,7 +495,7 @@ fn fixture_refusal(message: String) -> PyErr {
 /// value in the malformed reply class, and a verdict value
 /// judged at this layer could disagree with the record the
 /// library would write for the same scripted consultation.
-fn fixture_consultation(value: &Bound<'_, PyAny>) -> PyResult<Consultation> {
+fn fixture_consultation(value: &Bound<'_, PyAny>) -> PyResult<(Consultation, String)> {
     let dict = value
         .cast::<PyDict>()
         .map_err(|_| fixture_refusal("a fixture stands as no dictionary".to_string()))?;
@@ -535,9 +535,13 @@ fn fixture_consultation(value: &Bound<'_, PyAny>) -> PyResult<Consultation> {
     let name_item = dict.get_item("model_name")?.ok_or_else(|| {
         fixture_refusal("a fixture stands without the model name it stands pinned to".to_string())
     })?;
-    let model_name: String = name_item.extract()?;
+    let model_name: String = name_item
+        .extract()
+        .map_err(|_| fixture_refusal("a fixture model name stands as no name".to_string()))?;
     if let Some(verdict_value) = verdict_item {
-        let label: String = verdict_value.extract()?;
+        let label: String = verdict_value
+            .extract()
+            .map_err(|_| fixture_refusal("a fixture verdict stands as no verdict".to_string()))?;
         let verdict = match label.as_str() {
             "hold" => Verdict::Hold,
             "escalate" => Verdict::Escalate,
@@ -565,14 +569,21 @@ fn fixture_consultation(value: &Bound<'_, PyAny>) -> PyResult<Consultation> {
                 "score must be a number, not a boolean",
             ));
         }
-        let confidence: f64 = confidence_item.extract()?;
-        let score: f64 = score_item.extract()?;
-        Ok(Consultation::Verdict {
+        let confidence: f64 = confidence_item
+            .extract()
+            .map_err(|_| fixture_refusal("a fixture confidence stands as no number".to_string()))?;
+        let score: f64 = score_item
+            .extract()
+            .map_err(|_| fixture_refusal("a fixture score stands as no number".to_string()))?;
+        Ok((
+            Consultation::Verdict {
+                model_name: model_name.clone(),
+                verdict,
+                confidence,
+                score,
+            },
             model_name,
-            verdict,
-            confidence,
-            score,
-        })
+        ))
     } else {
         for field in ["confidence", "score"] {
             if dict.get_item(field)?.is_some() {
@@ -582,12 +593,19 @@ fn fixture_consultation(value: &Bound<'_, PyAny>) -> PyResult<Consultation> {
             }
         }
         let class_value = fallback_item.expect("one form stands present");
-        let class: String = class_value.extract()?;
+        let class: String = class_value
+            .extract()
+            .map_err(|_| fixture_refusal("a fixture fallback stands as no fallback".to_string()))?;
         match class.as_str() {
-            "abstention" => Ok(Consultation::Abstention { model_name }),
-            "call failed" => Ok(Consultation::CallFailed),
-            "silence" => Ok(Consultation::Silence),
-            "malformed reply" => Ok(Consultation::MalformedReply),
+            "abstention" => Ok((
+                Consultation::Abstention {
+                    model_name: model_name.clone(),
+                },
+                model_name,
+            )),
+            "call failed" => Ok((Consultation::CallFailed, model_name)),
+            "silence" => Ok((Consultation::Silence, model_name)),
+            "malformed reply" => Ok((Consultation::MalformedReply, model_name)),
             _ => Err(fixture_refusal(format!(
                 "a fixture names the fallback {} outside the four classes",
                 arvin_core::py_repr_str(&class)
@@ -611,11 +629,24 @@ fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
             "judge_timeout must be a number, not a boolean",
         ));
     }
+    // A value standing at or past the surfaces' whole
+    // ceiling renders as the ceiling itself in its refusal,
+    // the boundary the refusal names, because the value
+    // crossed no surface whole. Every other value renders
+    // as itself.
     let refusal = |rendered: &Value| {
-        to_py_error(Error::InvalidRequest(format!(
-            "judge timeout {} does not stand as a positive number of seconds the \
-             transport can hold",
+        let past_ceiling = match rendered {
+            Value::Int(number) => *number >= 1 && *number as u128 >= TIMEOUT_WHOLE_CEILING,
+            _ => false,
+        };
+        let rendering = if past_ceiling {
+            TIMEOUT_WHOLE_CEILING.to_string()
+        } else {
             arvin_core::py_printable(rendered)
+        };
+        to_py_error(Error::InvalidRequest(format!(
+            "judge timeout {rendering} does not stand as a positive number of seconds the \
+             transport can hold"
         )))
     };
     if value.is_instance_of::<PyInt>() {
@@ -696,21 +727,22 @@ fn stage_with_model(
             ));
         }
     }
-    let pinned_name = match &fixture {
-        Some(value) => {
-            let dict = value
-                .cast::<PyDict>()
-                .map_err(|_| fixture_refusal("a fixture stands as no dictionary".to_string()))?;
-            match dict.get_item("model_name")? {
-                Some(item) => Some(item.extract::<String>()?),
-                None => None,
-            }
-        }
-        None => None,
-    };
-    let consultation = match fixture {
+    // The fixture translation runs only where a fixture
+    // stands named, and the transport's pinned name comes
+    // from that one translation, the name the consultation
+    // itself carries where it carries one and the name the
+    // dictionary carries where the consultation carries
+    // none. Where neither judge form stands named, no
+    // transport stands named at all, so the library's own
+    // refusal for a context with no transport fires and its
+    // no consultation path runs for the plain call.
+    let translated = match fixture {
         Some(value) => Some(fixture_consultation(value)?),
         None => None,
+    };
+    let (consultation, pinned_name) = match translated {
+        Some((consultation, name)) => (Some(consultation), Some(name)),
+        None => (None, None),
     };
     let timeout = match judge_timeout {
         Some(value) => Some(timeout_argument(value)?),
@@ -740,8 +772,12 @@ fn stage_with_model(
                 );
                 Some(&subprocess_transport)
             } else if let Some(consultation) = consultation {
-                fixture_transport =
-                    FixtureTransport::new(pinned_name.as_deref().unwrap_or(""), vec![consultation]);
+                fixture_transport = FixtureTransport::new(
+                    pinned_name
+                        .as_deref()
+                        .expect("a consultation stands only beside its name"),
+                    vec![consultation],
+                );
                 Some(&fixture_transport)
             } else {
                 None

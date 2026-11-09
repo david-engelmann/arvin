@@ -4111,3 +4111,65 @@ fn cli_model_stage_off_seat_never_invokes_its_helper() {
     assert!(record.model_name.is_none());
     assert!(record.fallback_taken.is_none());
 }
+
+#[test]
+fn cli_model_judge_timeout_past_the_widest_duration_refuses_at_exit_2() {
+    let dir = TestDir::new("model-cli-timeout-past-duration");
+    let _switch = cli_switch_at_warn(&dir);
+    let helper = write_helper(&dir, "judge.sh", "#!/bin/sh\nprintf ''\n");
+    let before = state_bytes(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    // A timeout past the widest duration the transport can
+    // hold is an integer, and its refusal names the duration
+    // condition it breaks, at 2 to the 64th and at 2 to the
+    // 127th alike, where the second stands past the width of
+    // the integer the value holds at and the parser used to
+    // answer for it in the integer grammar's own words.
+    for value in [
+        "18446744073709551616",
+        "170141183460469231731687303715884105728",
+    ] {
+        let (_, stderr) = run_cli(
+            &[
+                "--state",
+                &state,
+                "stage",
+                "run-a",
+                "--judge",
+                &helper_text,
+                "--judge-timeout",
+                value,
+            ],
+            2,
+        );
+        assert!(
+            stderr.contains(&format!(
+                "judge timeout {value} does not stand as a positive number of seconds"
+            )),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("invalid int value"), "{stderr}");
+        assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+    }
+    // A value that is no integer at all keeps the parser
+    // error that names its own condition.
+    let (_, stderr) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-timeout",
+            "soon",
+        ],
+        2,
+    );
+    assert!(
+        stderr.contains("argument --judge-timeout: invalid int value: 'soon'"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+}
