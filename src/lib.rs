@@ -133,6 +133,22 @@ pub const MODEL_NAME_MAX: usize = 128;
 /// under DM-14, counted in characters.
 pub const HOST_CONTEXT_MAX: usize = 2000;
 
+/// The default deadline of a judge consultation, in seconds,
+/// standing published beside the landed defaults so neither
+/// surface restates the number and the surfaces cannot drift
+/// apart on it. Its value is the 10 seconds every in-repo
+/// driver already constructs, and the Round 5 amendment names
+/// it a contract visible fact in the manner of the bars.
+pub const DEFAULT_JUDGE_TIMEOUT_SECONDS: u64 = 10;
+
+/// The widest judge timeout value the surfaces hold whole
+/// while an out of range value crosses to its refusal, one
+/// more than the widest duration a transport can hold in
+/// whole seconds. A value at or past this ceiling refuses
+/// without being held, so no surface reads a number it
+/// cannot hold to name the value it refuses.
+pub const TIMEOUT_WHOLE_CEILING: u128 = 18446744073709551616;
+
 /// The verdict labels of DM-17, in the order the doctrine
 /// names them.
 const VERDICT_LABELS: [&str; 3] = ["hold", "escalate", "de-escalate"];
@@ -3399,8 +3415,8 @@ fn judge_payload(model_name: &str, vignette: &str) -> String {
     out
 }
 
-/// Read a consultation out of a helper reply body, under the
-/// reply shape this slice pins. The body is one JSON document
+/// Read a consultation out of a reply body, under the reply
+/// shape this slice pins. The body is one JSON document
 /// naming the model and carrying a choice object whose label
 /// is one of the three verdict labels or null for an
 /// abstention and, on a verdict, the confidence standing
@@ -3408,7 +3424,21 @@ fn judge_payload(model_name: &str, vignette: &str) -> String {
 /// is an integer from 1 to 10. Anything off that shape is a
 /// malformed reply, and a reported model name other than the
 /// pinned name is a malformed reply.
-fn extract_reply(body: &str, pinned: &str) -> Consultation {
+///
+/// The grammar stands public because it has two callers by
+/// design. The subprocess transport reads the body its helper
+/// printed through it, and the command line fixture route of
+/// the Round 5 amendment reads the body its fixture file
+/// holds through it, so the grammar stands in one
+/// implementation and its behaviour over a body is the landed
+/// behaviour for both. The silence class of DM-16 stands
+/// outside this grammar, because silence names a completed
+/// call whose body stands empty and the reading of a
+/// completed call belongs to the transport, so an empty body
+/// handed to this grammar directly parses as no document and
+/// lands in the malformed reply class, which is the reading
+/// the fixture route states for its scripted bodies.
+pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
     let value = match parse_document(body.as_bytes()) {
         Ok(value) => value,
         Err(_) => return Consultation::MalformedReply,
@@ -3628,7 +3658,7 @@ impl SubprocessTransport {
         if trimmed.is_empty() {
             return Consultation::Silence;
         }
-        extract_reply(trimmed, &self.model_name)
+        consultation_from_reply_body(trimmed, &self.model_name)
     }
 }
 

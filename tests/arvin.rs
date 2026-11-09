@@ -15,9 +15,9 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arvin::{
-    format_instant, parse_instant, Consultation, Error, FixtureTransport, Instant, ModelTransport,
-    Record, SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR,
-    FORMAT_NAME, MODEL_NAME, STAGES, TRIGGERS,
+    consultation_from_reply_body, format_instant, parse_instant, Consultation, Error,
+    FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value, Verdict,
+    DE_ESCALATION_BAR, ESCALATION_BAR, FORMAT_NAME, MODEL_NAME, STAGES, TRIGGERS,
 };
 
 fn t0() -> Instant {
@@ -3534,4 +3534,642 @@ fn cli_stage_and_log_carry_no_model_surface() {
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines[lines.len() - 1].starts_with("3 stage"));
     assert!(!stdout.contains("model"));
+}
+
+// ----------------------------------------------------------------
+// The command line model surface pins of Round 5, the DM-20
+// amendment. The command line reads the wall clock and offers
+// no instant override under DM-6, so every construction here
+// hangs from the wall clock second the test reads and
+// truncates, with the proof interval at an hour and the ages
+// standing minutes and hours away from every boundary the
+// evaluation reads, so a drift of seconds in either direction
+// cannot move a picture silently.
+
+/// The whole second the wall clock stands in as the test
+/// reads it, the anchor the command line constructions hang
+/// from.
+fn wall_second() -> Instant {
+    let text = format_instant(&Instant::now_utc()).expect("the wall clock formats");
+    parse_instant(&format!("{}+00:00", &text[..19])).expect("the whole second parses")
+}
+
+/// A run standing at warn with the held seat open at the wall
+/// clock, registered 5000 seconds before the anchor with an
+/// hour proof interval and raised by one missed proof 1000
+/// seconds before it, where the warrant stands at the stage
+/// for thousands of seconds on either side.
+fn build_held_at_wall(switch: &Switch, anchor: &Instant) {
+    switch
+        .register(
+            &text("run-a"),
+            &anchor.plus_seconds(-5000),
+            &int(3600),
+            &int(5),
+            &Value::Null,
+            &Value::Null,
+        )
+        .expect("registration succeeds");
+    switch
+        .stage(&text("run-a"), &anchor.plus_seconds(-1000))
+        .expect("the rise posts");
+}
+
+/// A run standing at throttle with the fall seat armed at the
+/// wall clock, raised through warn and throttle by missed
+/// proofs, proved at the throttle rise, and given one clean
+/// evaluation 200 seconds before the anchor, so the standing
+/// clear streak stands at 1 and the warrant stands below the
+/// stage.
+fn build_fall_at_wall(switch: &Switch, anchor: &Instant) {
+    switch
+        .register(
+            &text("run-a"),
+            &anchor.plus_seconds(-8500),
+            &int(3600),
+            &int(5),
+            &Value::Null,
+            &Value::Null,
+        )
+        .expect("registration succeeds");
+    switch
+        .stage(&text("run-a"), &anchor.plus_seconds(-4500))
+        .expect("the warn rise posts");
+    switch
+        .stage(&text("run-a"), &anchor.plus_seconds(-500))
+        .expect("the throttle rise posts");
+    switch
+        .prove(&text("run-a"), &text("working"), &anchor.plus_seconds(-500))
+        .expect("the proof posts");
+    switch
+        .stage(&text("run-a"), &anchor.plus_seconds(-200))
+        .expect("the clean evaluation posts");
+}
+
+fn cli_switch_at_warn(dir: &TestDir) -> Switch {
+    let switch = make_switch(dir);
+    build_held_at_wall(&switch, &wall_second());
+    switch
+}
+
+/// The state text inside a call payload the helper was
+/// handed, decoded out of the payload document, standing for
+/// the vignette the library built for the consultation.
+fn payload_state_text(payload: &str) -> String {
+    let marker = "\"state\": \"";
+    let start = payload
+        .find(marker)
+        .expect("the payload carries the state text")
+        + marker.len();
+    let bytes = payload.as_bytes();
+    let mut out = String::new();
+    let mut index = start;
+    loop {
+        match bytes[index] {
+            b'"' => break,
+            b'\\' => {
+                match bytes[index + 1] {
+                    b'n' => out.push('\n'),
+                    b't' => out.push('\t'),
+                    b'r' => out.push('\r'),
+                    b'"' => out.push('"'),
+                    b'\\' => out.push('\\'),
+                    b'u' => {
+                        let hex = &payload[index + 2..index + 6];
+                        let code = u32::from_str_radix(hex, 16).expect("a unicode escape reads");
+                        out.push(char::from_u32(code).expect("a character stands"));
+                        index += 4;
+                    }
+                    other => out.push(other as char),
+                }
+                index += 2;
+            }
+            _ => {
+                let width = if bytes[index] < 0x80 {
+                    1
+                } else if bytes[index] < 0xE0 {
+                    2
+                } else if bytes[index] < 0xF0 {
+                    3
+                } else {
+                    4
+                };
+                out.push_str(&payload[index..index + width]);
+                index += width;
+            }
+        }
+    }
+    out
+}
+
+/// The self-witnessing drive of one constructed seat shape.
+/// Two documents stand built by the same library calls. The
+/// command runs in its model form over the first through a
+/// capturing helper that prints the scripted reply, and the
+/// library path then re-runs on the twin at the instant the
+/// record the command appended itself names, with the same
+/// reply scripted through the fixture transport. The two
+/// landings must stand byte identical, and the vignette the
+/// twin transport was shown must equal the state text inside
+/// the payload the helper captured.
+fn self_witness(
+    name: &str,
+    build: fn(&Switch, &Instant),
+    reply: &str,
+) -> (Record, String, Vec<u8>, Vec<u8>) {
+    let dir = TestDir::new(name);
+    let anchor = wall_second();
+    let one = Switch::new(dir.path().join("one.json"));
+    build(&one, &anchor);
+    let two = Switch::new(dir.path().join("two.json"));
+    build(&two, &anchor);
+    let capture = dir.path().join("payload.json");
+    let helper = write_helper(
+        &dir,
+        "judge.sh",
+        &format!("#!/bin/sh\ncp \"$3\" \"$1\"\nprintf '%s' '{reply}'\n"),
+    );
+    let state = dir.path().join("one.json").to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let capture_text = capture.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-arg",
+            &capture_text,
+        ],
+        0,
+    );
+    assert!(
+        capture.exists(),
+        "the consultation happened, stdout was {stdout}"
+    );
+    let record = one
+        .log(&text("run-a"))
+        .unwrap()
+        .pop()
+        .expect("the command appended its record");
+    let instant = parse_instant(&record.at).expect("the record instant parses");
+    let fixture = FixtureTransport::new(
+        MODEL_NAME,
+        vec![consultation_from_reply_body(reply, MODEL_NAME)],
+    );
+    two.stage_with_model(&text("run-a"), &instant, Some(&fixture), None)
+        .unwrap();
+    let payload = std::fs::read_to_string(&capture).expect("the payload reads");
+    assert_eq!(
+        payload_state_text(&payload),
+        fixture.shown()[0],
+        "the payload the command handed its helper carries the vignette the library path renders"
+    );
+    let one_bytes = std::fs::read(dir.path().join("one.json")).unwrap();
+    let two_bytes = std::fs::read(dir.path().join("two.json")).unwrap();
+    (record, stdout, one_bytes, two_bytes)
+}
+
+#[test]
+fn cli_model_self_witnessing_equivalence() {
+    // A held seat escalate that applies.
+    let (record, _, one, two) = self_witness(
+        "model-cli-witness-held-escalate",
+        build_held_at_wall,
+        "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
+    );
+    assert_eq!(record.model_verdict.as_deref(), Some("escalate"));
+    assert_eq!(record.stage, "throttle");
+    assert_eq!(one, two, "the held escalate landings stand identical");
+    // A held seat hold.
+    let (record, _, one, two) = self_witness(
+        "model-cli-witness-held-hold",
+        build_held_at_wall,
+        "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
+    );
+    assert_eq!(record.model_verdict.as_deref(), Some("hold"));
+    assert_eq!(record.stage, "warn");
+    assert_eq!(one, two, "the held hold landings stand identical");
+    // A fall seat de-escalation that is endorsed.
+    let (record, _, one, two) = self_witness(
+        "model-cli-witness-fall-de-escalate",
+        build_fall_at_wall,
+        "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"de-escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 3}}",
+    );
+    assert_eq!(record.model_verdict.as_deref(), Some("de-escalate"));
+    assert_eq!(record.stage, "warn");
+    assert_eq!(one, two, "the fall de-escalate landings stand identical");
+    // A fall seat fallback.
+    let (record, _, one, two) = self_witness(
+        "model-cli-witness-fall-fallback",
+        build_fall_at_wall,
+        "not a reply body",
+    );
+    assert_eq!(record.fallback_taken.as_deref(), Some("malformed reply"));
+    assert_eq!(record.stage, "throttle");
+    assert_eq!(one, two, "the fall fallback landings stand identical");
+}
+
+/// Drive the stage command in model form over the held seat
+/// with the named helper script standing as the judge program,
+/// and return the printed output and the record the evaluation
+/// appended.
+fn cli_model_drive(name: &str, script: &str) -> (String, Record) {
+    let dir = TestDir::new(name);
+    let switch = cli_switch_at_warn(&dir);
+    let helper = write_helper(&dir, "judge.sh", script);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &["--state", &state, "stage", "run-a", "--judge", &helper_text],
+        0,
+    );
+    let record = last_record(&switch);
+    (stdout, record)
+}
+
+fn assert_fallback(stdout: &str, record: &Record, class: &str) {
+    assert_eq!(stdout.lines().next(), Some("stage warn"), "{stdout}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.contains(&"model jev-1.13.0"), "{stdout}");
+    assert!(
+        lines.contains(&format!("fallback {class}").as_str()),
+        "{stdout}"
+    );
+    assert_eq!(record.stage, "warn");
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    assert_eq!(record.fallback_taken.as_deref(), Some(class));
+    assert!(record.model_verdict.is_none());
+}
+
+#[test]
+fn cli_model_missing_judge_program_records_call_failed() {
+    let dir = TestDir::new("model-cli-missing-judge");
+    let switch = cli_switch_at_warn(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let missing = dir
+        .path()
+        .join("no-such-helper")
+        .to_string_lossy()
+        .into_owned();
+    let (stdout, _) = run_cli(
+        &["--state", &state, "stage", "run-a", "--judge", &missing],
+        0,
+    );
+    let record = last_record(&switch);
+    assert_fallback(&stdout, &record, "call failed");
+}
+
+#[test]
+fn cli_model_helper_nonzero_exit_records_call_failed() {
+    let (stdout, record) = cli_model_drive("model-cli-exit-two", "#!/bin/sh\nexit 2\n");
+    assert_fallback(&stdout, &record, "call failed");
+}
+
+#[test]
+fn cli_model_helper_empty_body_records_silence() {
+    let (stdout, record) = cli_model_drive("model-cli-silence", "#!/bin/sh\nprintf ''\n");
+    assert_fallback(&stdout, &record, "silence");
+}
+
+#[test]
+fn cli_model_helper_body_outside_the_grammar_records_malformed_reply() {
+    let (stdout, record) =
+        cli_model_drive("model-cli-malformed", "#!/bin/sh\nprintf '%s' 'not json'\n");
+    assert_fallback(&stdout, &record, "malformed reply");
+}
+
+#[test]
+fn cli_model_helper_abstention_records_abstention() {
+    let (stdout, record) = cli_model_drive(
+        "model-cli-abstention",
+        "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null, \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
+    );
+    assert_fallback(&stdout, &record, "abstention");
+}
+
+#[test]
+fn cli_model_helper_past_its_timeout_records_call_failed() {
+    let dir = TestDir::new("model-cli-timeout");
+    let switch = cli_switch_at_warn(&dir);
+    let helper = write_helper(&dir, "judge.sh", "#!/bin/sh\nsleep 5\n");
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let started = std::time::Instant::now();
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-timeout",
+            "1",
+        ],
+        0,
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(4),
+        "the timed out call returned in {elapsed:?}"
+    );
+    let record = last_record(&switch);
+    assert_fallback(&stdout, &record, "call failed");
+}
+
+#[test]
+fn cli_model_fixture_file_drives_its_verdict_pattern() {
+    let dir = TestDir::new("model-cli-fixture");
+    let switch = cli_switch_at_warn(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("escalation")
+        .join("replies")
+        .join("DM-E01.json");
+    let fixture_text = fixture.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge-fixture",
+            &fixture_text,
+        ],
+        0,
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        vec![
+            "stage throttle",
+            "reason missed proofs",
+            "model jev-1.13.0",
+            "verdict escalate",
+            "confidence 0.77",
+            "score 0.5555555555555556",
+        ],
+        "{stdout}"
+    );
+    let record = last_record(&switch);
+    assert_eq!(record.model_verdict.as_deref(), Some("escalate"));
+    assert_eq!(record.model_confidence, Some(0.77));
+    assert_eq!(record.model_score, Some(5.0 / 9.0));
+    assert_eq!(record.stage, "throttle");
+}
+
+#[test]
+fn cli_model_unreadable_fixture_file_fails_before_any_state_change() {
+    let dir = TestDir::new("model-cli-fixture-missing");
+    let switch = cli_switch_at_warn(&dir);
+    let before = state_bytes(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let missing = dir.path().join("no-such-reply.json");
+    let missing_text = missing.to_string_lossy().into_owned();
+    let (_, stderr) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge-fixture",
+            &missing_text,
+        ],
+        1,
+    );
+    assert!(stderr.contains("no-such-reply.json"), "{stderr}");
+    assert!(stderr.contains("cannot be read"), "{stderr}");
+    assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+    let _ = switch;
+}
+
+#[test]
+fn cli_model_two_judge_forms_and_orphan_parts_refuse_at_exit_2() {
+    let dir = TestDir::new("model-cli-two-forms");
+    let _switch = cli_switch_at_warn(&dir);
+    let before = state_bytes(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let (_, stderr) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            "a-helper",
+            "--judge-fixture",
+            "a-reply.json",
+        ],
+        2,
+    );
+    assert!(
+        stderr.contains("exactly one judge form may stand named on one call"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+    let (_, stderr) = run_cli(
+        &["--state", &state, "stage", "run-a", "--judge-arg", "an-arg"],
+        2,
+    );
+    assert!(
+        stderr.contains("a judge argument stands named with no judge program to carry it"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+    let (_, stderr) = run_cli(
+        &["--state", &state, "stage", "run-a", "--judge-timeout", "5"],
+        2,
+    );
+    assert!(
+        stderr.contains("a judge timeout stands named with no judge program to carry it"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+}
+
+#[test]
+fn cli_model_host_context_with_no_judge_refuses_with_the_library_message() {
+    let dir = TestDir::new("model-cli-context-orphan");
+    let _switch = cli_switch_at_warn(&dir);
+    let before = state_bytes(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let (_, stderr) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--host-context",
+            "a note from the host",
+        ],
+        2,
+    );
+    assert!(
+        stderr.contains("a host context stands supplied with no model transport to carry it"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+}
+
+#[test]
+fn cli_model_judge_timeout_of_zero_refuses_at_exit_2() {
+    let dir = TestDir::new("model-cli-timeout-zero");
+    let _switch = cli_switch_at_warn(&dir);
+    let helper = write_helper(&dir, "judge.sh", "#!/bin/sh\nprintf ''\n");
+    let before = state_bytes(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    for (value, rendered) in [("0", "0"), ("-5", "-5")] {
+        let (_, stderr) = run_cli(
+            &[
+                "--state",
+                &state,
+                "stage",
+                "run-a",
+                "--judge",
+                &helper_text,
+                "--judge-timeout",
+                value,
+            ],
+            2,
+        );
+        assert!(
+            stderr.contains(&format!(
+                "judge timeout {rendered} does not stand as a positive number of seconds"
+            )),
+            "{stderr}"
+        );
+        assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+    }
+}
+
+#[test]
+fn cli_stage_without_a_judge_appends_no_consultation() {
+    let dir = TestDir::new("model-cli-deterministic-guard");
+    let switch = cli_switch_at_warn(&dir);
+    let before = switch.log(&text("run-a")).unwrap().len();
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(&["--state", &state, "stage", "run-a"], 0);
+    assert_eq!(stdout.lines().next(), Some("stage warn"), "{stdout}");
+    assert!(
+        !stdout.lines().any(|line| line.starts_with("model")),
+        "{stdout}"
+    );
+    let records = switch.log(&text("run-a")).unwrap();
+    assert_eq!(records.len(), before + 1);
+    let record = records.last().expect("the stage record stands");
+    assert!(record.model_name.is_none());
+    assert!(record.model_verdict.is_none());
+    assert!(record.fallback_taken.is_none());
+}
+
+#[test]
+fn cli_model_stage_off_seat_never_invokes_its_helper() {
+    let dir = TestDir::new("model-cli-off-seat");
+    let switch = make_switch(&dir);
+    let anchor = wall_second();
+    switch
+        .register(
+            &text("run-a"),
+            &anchor.plus_seconds(-100),
+            &int(3600),
+            &int(5),
+            &Value::Null,
+            &Value::Null,
+        )
+        .expect("registration succeeds");
+    let capture = dir.path().join("payload.json");
+    let helper = write_helper(
+        &dir,
+        "judge.sh",
+        "#!/bin/sh\ncp \"$3\" \"$1\"\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}'\n",
+    );
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let capture_text = capture.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-arg",
+            &capture_text,
+        ],
+        0,
+    );
+    assert_eq!(stdout.lines().next(), Some("stage none"), "{stdout}");
+    assert!(!capture.exists(), "the helper stands uninvoked off seat");
+    let record = last_record(&switch);
+    assert!(record.model_name.is_none());
+    assert!(record.fallback_taken.is_none());
+}
+
+#[test]
+fn cli_model_judge_timeout_past_the_widest_duration_refuses_at_exit_2() {
+    let dir = TestDir::new("model-cli-timeout-past-duration");
+    let _switch = cli_switch_at_warn(&dir);
+    let helper = write_helper(&dir, "judge.sh", "#!/bin/sh\nprintf ''\n");
+    let before = state_bytes(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    // A timeout past the widest duration the transport can
+    // hold is an integer, and its refusal names the duration
+    // condition it breaks, at 2 to the 64th and at 2 to the
+    // 127th alike, where the second stands past the width of
+    // the integer the value holds at and the parser used to
+    // answer for it in the integer grammar's own words.
+    for value in [
+        "18446744073709551616",
+        "170141183460469231731687303715884105728",
+    ] {
+        let (_, stderr) = run_cli(
+            &[
+                "--state",
+                &state,
+                "stage",
+                "run-a",
+                "--judge",
+                &helper_text,
+                "--judge-timeout",
+                value,
+            ],
+            2,
+        );
+        assert!(
+            stderr.contains(&format!(
+                "judge timeout {value} does not stand as a positive number of seconds"
+            )),
+            "{stderr}"
+        );
+        assert!(!stderr.contains("invalid int value"), "{stderr}");
+        assert_eq!(state_bytes(&dir), before, "the state bytes stand");
+    }
+    // A value that is no integer at all keeps the parser
+    // error that names its own condition.
+    let (_, stderr) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-timeout",
+            "soon",
+        ],
+        2,
+    );
+    assert!(
+        stderr.contains("argument --judge-timeout: invalid int value: 'soon'"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before, "the state bytes stand");
 }

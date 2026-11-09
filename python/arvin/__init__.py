@@ -17,14 +17,15 @@ Every operation but the log read takes the current instant
 as ISO 8601 text the library parses, exactly as the library
 takes it, and no call reads a clock of its own. The register
 call returns the stored facts of the run it opens, the stage
-call returns the stage name and its reasons, the spend call
-returns the accumulated spend, the pull call returns the
-stage name, and the log call returns the decision records
-with every field they stand in the state file with, the
-five model fields among them, carried exactly as they stand
-in the file, null in every record the deterministic
-operations write and populated on the stage record of a
-consultation.
+call returns the stage name and its reasons, the
+stage_with_model call returns the same report for an
+evaluation that consulted a model, the spend call returns
+the accumulated spend, the pull call returns the stage name,
+and the log call returns the decision records with every
+field they stand in the state file with, the five model
+fields among them, carried exactly as they stand in the
+file, null in every record the deterministic operations
+write and populated on the stage record of a consultation.
 """
 
 from ._arvin import (
@@ -41,6 +42,7 @@ from ._arvin import (
     register,
     spend,
     stage,
+    stage_with_model,
 )
 
 __all__ = [
@@ -57,6 +59,7 @@ __all__ = [
     "register",
     "spend",
     "stage",
+    "stage_with_model",
 ]
 
 __version__ = "0.1.0"

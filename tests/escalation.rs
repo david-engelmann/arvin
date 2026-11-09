@@ -22,8 +22,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arvin::{
-    Consultation, FixtureTransport, Instant, Record, SubprocessTransport, Switch, Value, Verdict,
-    DE_ESCALATION_BAR, ESCALATION_BAR, STAGES,
+    consultation_from_reply_body, Consultation, FixtureTransport, Instant, Record,
+    SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR, MODEL_NAME,
+    STAGES,
 };
 
 // ----------------------------------------------------------------
@@ -824,5 +825,64 @@ fn a_recorded_case_replays_to_identical_state_bytes() {
     assert_eq!(
         states[0], states[1],
         "two replays of one recorded case land identical bytes"
+    );
+}
+
+/// The reply grammar the subprocess transport reads through
+/// stands public under the Round 5 amendment, and over the
+/// recorded reply body of every corpus case it returns the
+/// consultation the manifest record describes, so a grammar
+/// exposed wrongly, or a wrapper that translates instead of
+/// delegating, fails against the corpus it claims to share
+/// with the transport.
+#[test]
+fn the_public_reply_grammar_reads_every_recorded_reply() {
+    let corpus = read_json(&fixtures_dir().join("corpus.json"));
+    let cases = corpus
+        .get("cases")
+        .and_then(Json::as_array)
+        .expect("the corpus carries cases");
+    assert_eq!(cases.len(), 48, "the corpus stands at 48 cases");
+    for item in cases {
+        let id = item
+            .get("id")
+            .and_then(Json::as_str)
+            .expect("a case carries its id");
+        let case = load_case(id);
+        let body =
+            std::fs::read_to_string(fixtures_dir().join("replies").join(format!("{id}.json")))
+                .expect("the recorded reply body reads");
+        assert_eq!(
+            consultation_from_reply_body(body.trim(), MODEL_NAME),
+            recorded_consultation(&case),
+            "{id}: the public grammar reads the recorded consultation"
+        );
+    }
+}
+
+/// A body naming a model other than the pinned name, and a
+/// body standing as no document, each parse to the malformed
+/// reply class through the public grammar, the two shapes the
+/// command line fixture route must not mistake for a script.
+/// An empty body stands in the second shape here, because the
+/// fixture route makes no call and silence names a completed
+/// call, so its empty script reads malformed and not silent.
+#[test]
+fn the_public_reply_grammar_refuses_a_foreign_model_and_no_document() {
+    let foreign = "{\"model\": \"other-1.0\", \"choice\": {\"label\": null}}";
+    assert_eq!(
+        consultation_from_reply_body(foreign, MODEL_NAME),
+        Consultation::MalformedReply,
+        "a foreign model name is a malformed reply"
+    );
+    assert_eq!(
+        consultation_from_reply_body("not a document", MODEL_NAME),
+        Consultation::MalformedReply,
+        "a body standing as no document is a malformed reply"
+    );
+    assert_eq!(
+        consultation_from_reply_body("", MODEL_NAME),
+        Consultation::MalformedReply,
+        "an empty body handed to the grammar is a malformed reply"
     );
 }

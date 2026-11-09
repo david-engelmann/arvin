@@ -19,10 +19,13 @@
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use arvin::{
-    py_repr_str, Error, Instant, Switch, Value, DEFAULT_MISSED_PROOF_LIMIT,
-    DEFAULT_PROOF_INTERVAL_SECONDS,
+    consultation_from_reply_body, format_instant, py_float_repr, py_printable, py_repr_str, Error,
+    FixtureTransport, Instant, ModelTransport, SubprocessTransport, Switch, Value,
+    DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
+    MODEL_NAME, TIMEOUT_WHOLE_CEILING,
 };
 
 const MAIN_USAGE: &str =
@@ -58,7 +61,9 @@ fn sub_usage(command: &str) -> &'static str {
         "prove" => "usage: arvin prove [-h] [--note NOTE] run",
         "spend" => "usage: arvin spend [-h] --amount AMOUNT run",
         "pull" => "usage: arvin pull [-h] run",
-        "stage" => "usage: arvin stage [-h] run",
+        "stage" => {
+            "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--host-context HOST_CONTEXT]\n                        run"
+        }
         _ => "usage: arvin log [-h] run",
     }
 }
@@ -78,7 +83,7 @@ fn sub_help(command: &str) -> &'static str {
             "usage: arvin pull [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
         "stage" => {
-            "usage: arvin stage [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--host-context HOST_CONTEXT]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
         }
         _ => {
             "usage: arvin log [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
@@ -96,6 +101,13 @@ fn value_options(command: &str) -> &'static [&'static str] {
         ],
         "prove" => &["--note"],
         "spend" => &["--amount"],
+        "stage" => &[
+            "--judge",
+            "--judge-arg",
+            "--judge-timeout",
+            "--judge-fixture",
+            "--host-context",
+        ],
         _ => &[],
     }
 }
@@ -107,6 +119,7 @@ fn is_int_option(command: &str, option: &str) -> bool {
             "--proof-interval" | "--missed-limit" | "--soft-ceiling" | "--hard-ceiling"
         ),
         "spend" => option == "--amount",
+        "stage" => option == "--judge-timeout",
         _ => false,
     }
 }
@@ -499,6 +512,24 @@ fn option_text<'a>(args: &'a SubArgs, name: &str) -> Option<&'a str> {
     })
 }
 
+/// Every value of a repeatable option, in the order the
+/// caller named them.
+fn option_list<'a>(args: &'a SubArgs, name: &str) -> Vec<&'a str> {
+    args.options
+        .iter()
+        .filter_map(|(seen, value)| {
+            if seen == name {
+                match value {
+                    SubValue::Text(text) => Some(text.as_str()),
+                    SubValue::Int(_) => None,
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn option_int<'a>(args: &'a SubArgs, name: &str) -> Option<&'a Value> {
     args.options.iter().rev().find_map(|(seen, value)| {
         if seen == name {
@@ -737,11 +768,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
             println!("stage {stage}");
         }
         "stage" => {
-            let report = switch.stage(&run_value, &now)?;
-            println!("stage {}", report.stage);
-            for reason in &report.reasons {
-                println!("reason {reason}");
-            }
+            stage_command(&switch, &run_value, &now, &args)?;
         }
         _ => {
             for record in switch.log(&run_value)? {
@@ -757,6 +784,189 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
         }
     }
     Ok(ExitCode::from(0))
+}
+
+/// The stage command, in its deterministic form and its model
+/// form over the one model entry point of DM-20. The command
+/// builds at most one transport from its judge options and
+/// calls stage_with_model in every case, so the deterministic
+/// behaviour is the library no transport case of that call and
+/// no second evaluation path stands in the binary. The surface
+/// refuses its own malformed shapes before any state changes,
+/// in the invalid request class the library refusals of the
+/// same conditions take.
+fn stage_command(
+    switch: &Switch,
+    run_value: &Value,
+    now: &Instant,
+    args: &SubArgs,
+) -> Result<(), Error> {
+    let judge = option_text(args, "--judge");
+    let fixture_file = option_text(args, "--judge-fixture");
+    let judge_args = option_list(args, "--judge-arg");
+    let judge_timeout = option_int(args, "--judge-timeout");
+    let host_context = option_text(args, "--host-context");
+    if judge.is_some() && fixture_file.is_some() {
+        return Err(Error::InvalidRequest(
+            "exactly one judge form may stand named on one call".to_string(),
+        ));
+    }
+    if judge.is_none() {
+        if !judge_args.is_empty() {
+            return Err(Error::InvalidRequest(
+                "a judge argument stands named with no judge program to carry it".to_string(),
+            ));
+        }
+        if judge_timeout.is_some() {
+            return Err(Error::InvalidRequest(
+                "a judge timeout stands named with no judge program to carry it".to_string(),
+            ));
+        }
+    }
+    let timeout = match judge_timeout {
+        Some(value) => Some(judge_timeout_duration(value)?),
+        None => None,
+    };
+    let subprocess_transport;
+    let fixture_transport;
+    let transport: Option<&dyn ModelTransport> = if let Some(program) = judge {
+        subprocess_transport = SubprocessTransport::new(
+            PathBuf::from(program),
+            judge_args.iter().map(|arg| arg.to_string()).collect(),
+            timeout.unwrap_or(Duration::from_secs(DEFAULT_JUDGE_TIMEOUT_SECONDS)),
+        );
+        Some(&subprocess_transport)
+    } else if let Some(path) = fixture_file {
+        let body = read_judge_fixture(path)?;
+        fixture_transport = FixtureTransport::new(
+            MODEL_NAME,
+            vec![consultation_from_reply_body(&body, MODEL_NAME)],
+        );
+        Some(&fixture_transport)
+    } else {
+        None
+    };
+    // The consultation lines are read from the log the
+    // evaluation leaves behind, identified without trusting
+    // the clock that chose them. The sequence number of the
+    // last record standing before the evaluation is noted, and
+    // the lines print only from a stage record standing
+    // exactly one sequence past it, stamped with the instant
+    // the command passed to the entry point, carrying a
+    // consultation pattern. In the single invocation case
+    // those conditions hold together exactly when the
+    // evaluation appended a consultation record.
+    let noted = switch
+        .log(run_value)
+        .ok()
+        .and_then(|records| records.last().map(|record| record.seq));
+    let report = switch.stage_with_model(run_value, now, transport, host_context)?;
+    println!("stage {}", report.stage);
+    for reason in &report.reasons {
+        println!("reason {reason}");
+    }
+    if let Some(lines) = consultation_lines(switch, run_value, noted, now) {
+        for line in lines {
+            println!("{line}");
+        }
+    }
+    Ok(())
+}
+
+/// The deadline a judge timeout value names, refused as an
+/// invalid request where the value does not stand as a
+/// positive number of seconds the transport duration can
+/// hold, with the message naming the value and the condition.
+/// A value standing at or past the surfaces' whole ceiling
+/// refuses without being held, because no surface reads a
+/// number it cannot hold to name the value it refuses.
+fn judge_timeout_duration(value: &Value) -> Result<Duration, Error> {
+    let seconds = match value {
+        Value::Int(number) if *number >= 1 && *number <= u64::MAX as i128 => Some(*number as u64),
+        _ => None,
+    };
+    match seconds {
+        Some(seconds) => Ok(Duration::from_secs(seconds)),
+        None => Err(Error::InvalidRequest(format!(
+            "judge timeout {} does not stand as a positive number of seconds the \
+             transport can hold",
+            timeout_printable(value)
+        ))),
+    }
+}
+
+/// The rendering of a judge timeout value for its refusal.
+/// A value standing at or past the whole ceiling renders as
+/// the ceiling itself, the boundary the refusal names,
+/// because the value crossed no surface whole. Every other
+/// value renders as itself.
+fn timeout_printable(value: &Value) -> String {
+    let past_ceiling = match value {
+        Value::Int(number) => *number >= 1 && *number as u128 >= TIMEOUT_WHOLE_CEILING,
+        _ => false,
+    };
+    if past_ceiling {
+        TIMEOUT_WHOLE_CEILING.to_string()
+    } else {
+        py_printable(value)
+    }
+}
+
+/// Read the reply body a judge fixture file holds. The file
+/// is an input the command must open before any evaluation can
+/// stand, so a file that cannot be read is a failure of the
+/// command at exit 1 with a message naming the file, and no
+/// state changes and no record stands appended. Bytes that
+/// stand as no text parse under the reply grammar as no
+/// document, in the malformed reply class the grammar states
+/// for them.
+fn read_judge_fixture(path: &str) -> Result<String, Error> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(String::from_utf8(bytes).unwrap_or_default()),
+        Err(err) => Err(Error::Failure(format!(
+            "the judge fixture file {} cannot be read, {err}",
+            py_repr_str(path)
+        ))),
+    }
+}
+
+/// The consultation lines the stage command prints after its
+/// stage and reason lines, read from the record the evaluation
+/// appended, or nothing where the record standing last is not
+/// that record or carries no consultation. The confidence and
+/// the score render by the library float rendering the
+/// document writer uses, so the printed numbers and the stored
+/// fields cannot disagree.
+fn consultation_lines(
+    switch: &Switch,
+    run_value: &Value,
+    noted: Option<u64>,
+    now: &Instant,
+) -> Option<Vec<String>> {
+    let noted = noted?;
+    let records = switch.log(run_value).ok()?;
+    let record = records.last()?;
+    if record.kind != "stage" || record.seq != noted + 1 {
+        return None;
+    }
+    if record.at != format_instant(now).ok()? {
+        return None;
+    }
+    let model = record.model_name.as_ref()?;
+    if let Some(class) = &record.fallback_taken {
+        Some(vec![format!("model {model}"), format!("fallback {class}")])
+    } else if let Some(verdict) = &record.model_verdict {
+        let confidence = record.model_confidence?;
+        let score = record.model_score?;
+        Some(vec![
+            format!("model {model}"),
+            format!("verdict {verdict}"),
+            format!("confidence {}", py_float_repr(confidence)),
+            format!("score {}", py_float_repr(score)),
+        ])
+    } else {
+        None
+    }
 }
 
 fn main() -> ExitCode {
