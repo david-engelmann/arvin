@@ -141,6 +141,9 @@ def test_recorded_cases_replay_through_the_binding(tmp_path):
             "fallback_taken",
         ):
             assert last[field] == recorded[field], (case["id"], field)
+        # The recorded cases predate the Round 7 amendment, so
+        # the ancestry field stands null on the expected side.
+        assert last["model_ancestry"] is None, case["id"]
         assert last["stage"] == entry["stage_after"], case["id"]
         expected_payload = (
             FIXTURES / "requests" / f"{case['id']}.json"

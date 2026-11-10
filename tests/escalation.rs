@@ -596,6 +596,11 @@ fn assert_record_matches(case: &Case, record: &Record) {
         case.id
     );
     assert_eq!(
+        record.model_ancestry, None,
+        "{}: ancestry stands null on every recorded case",
+        case.id
+    );
+    assert_eq!(
         record.stage, case.stage_after,
         "{}: recorded stage",
         case.id

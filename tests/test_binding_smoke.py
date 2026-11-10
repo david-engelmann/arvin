@@ -74,6 +74,7 @@ def record(seq, kind, at, stage, reasons):
         "fallback_taken": None,
         "model_verdict": None,
         "model_score": None,
+        "model_ancestry": None,
     }
 
 
@@ -88,6 +89,7 @@ def stored_run(state):
     for entry in run["log"]:
         entry.setdefault("model_verdict", None)
         entry.setdefault("model_score", None)
+        entry.setdefault("model_ancestry", None)
     return run
 
 
@@ -862,3 +864,59 @@ def test_stage_with_model_fixture_values_of_the_wrong_type_refuse(
             )
         assert field in str(raised.value), str(raised.value)
         assert len(arvin.log(state, "run-a")) == 2
+
+
+def test_binding_log_records_carry_the_ancestry_field(tmp_path):
+    # The certifying sequence of DM-23 driven through the
+    # binding alone. The run rises to throttle on missed
+    # proofs, a proof and a clean evaluation arm the fall
+    # seat, the fall seat consultation answers de-escalate
+    # below the bar and holds, and two plain evaluations
+    # complete the streak and step the stage down.
+    state = str(tmp_path / "state.json")
+    arvin.register(state, "run-a", T0)
+    report = arvin.stage(state, "run-a", "2031-05-04T12:02:01+00:00")
+    assert report["stage"] == "throttle"
+    arvin.prove(state, "run-a", "2031-05-04T12:02:01+00:00")
+    arvin.stage(state, "run-a", "2031-05-04T12:02:02+00:00")
+
+    report = arvin.stage_with_model(
+        state,
+        "run-a",
+        "2031-05-04T12:02:03+00:00",
+        fixture={
+            "model_name": "jev-1.13.0",
+            "verdict": "de-escalate",
+            "confidence": 0.79,
+            "score": 0.2,
+        },
+    )
+    assert report["stage"] == "throttle"
+    arvin.stage(state, "run-a", "2031-05-04T12:02:04+00:00")
+    report = arvin.stage(state, "run-a", "2031-05-04T12:02:05+00:00")
+    assert report["stage"] == "warn"
+
+    entries = arvin.log(state, "run-a")
+    step_down = entries[-1]
+    assert step_down["kind"] == "stage"
+    assert step_down["stage"] == "warn"
+    assert step_down["model_ancestry"] == "de-escalate below bar"
+    assert step_down["model_name"] is None
+    assert step_down["model_verdict"] is None
+    assert step_down["model_confidence"] is None
+    assert step_down["model_score"] is None
+    assert step_down["fallback_taken"] is None
+    # A record in a landed shape returns the key at null, the
+    # registered record among them, and the consultation
+    # record that certified the step down carries it at null
+    # in its eleven key shape in the stored document.
+    assert entries[0]["model_ancestry"] is None
+    consultation = entries[-2]
+    assert consultation["model_verdict"] == "de-escalate"
+    assert consultation["model_ancestry"] is None
+    run = json.loads(Path(state).read_text())["runs"][0]
+    assert run["log"][-1]["model_ancestry"] == (
+        "de-escalate below bar"
+    )
+    assert run["log"][-2]["model_ancestry"] is None
+    assert "streak_ancestry" not in run

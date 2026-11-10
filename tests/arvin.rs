@@ -3342,6 +3342,423 @@ fn model_record_damage_battery() {
     ));
 }
 
+/// The rendered block of one record in a state text, from
+/// its opening brace to its closing brace, located by its
+/// sequence number.
+fn record_block(text: &str, seq: u64) -> String {
+    let needle = format!("\"seq\": {seq},");
+    let at = text.find(&needle).expect("the record stands");
+    let start = text[..at].rfind("        {\n").expect("the record opens");
+    let end = text[at..].find("\n        }").expect("the record closes") + at + "\n        }".len();
+    text[start..end].to_string()
+}
+
+/// A run at throttle whose fall seat stands armed, driven
+/// through one fall seat consultation that answers with the
+/// given reply and holds, spending the streak.
+fn fall_seat_spend(dir: &TestDir, reply: Consultation) -> Switch {
+    let switch = switch_at_throttle_fall_seat(dir);
+    let transport = fixture_transport(vec![reply]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    switch
+}
+
+/// The certifying sequence of DM-23 driven whole. A fall
+/// seat consultation answering de-escalate at 0.79, the
+/// highest below bar confidence the corpus records, holds
+/// and spends the streak, a plain evaluation advances the
+/// streak again, and a second steps the stage down from
+/// throttle to warn through the deterministic streak branch.
+fn certified_step_down(dir: &TestDir) -> Switch {
+    let switch = fall_seat_spend(dir, verdict(Verdict::DeEscalate, 0.79, 0.2));
+    switch.stage(&text("run-a"), &at(124)).unwrap();
+    switch.stage(&text("run-a"), &at(125)).unwrap();
+    switch
+}
+
+#[test]
+fn streak_step_down_behind_a_below_bar_fall_seat_verdict_carries_the_ancestry_pattern() {
+    let dir = TestDir::new("ancestry-certified-step-down");
+    let switch = certified_step_down(&dir);
+    let record = last_record(&switch);
+    assert_eq!(record.kind, "stage");
+    assert_eq!(record.stage, "warn");
+    assert_eq!(record.model_name, None);
+    assert_eq!(record.model_verdict, None);
+    assert_eq!(record.model_confidence, None);
+    assert_eq!(record.model_score, None);
+    assert_eq!(record.fallback_taken, None);
+    assert_eq!(
+        record.model_ancestry.as_deref(),
+        Some("de-escalate below bar")
+    );
+    let document = state_text(&dir);
+    // The step down record stands in the eleven key shape,
+    // the ancestry field last, and the consultation record
+    // before it stands in the same shape at null, and no
+    // other new field stands anywhere in the document, the
+    // carry field included, because the step down consumed
+    // the certification it certifies.
+    let step_down = record_block(&document, 5);
+    assert_eq!(step_down.matches("\n          \"").count(), 11);
+    let verdict_at = step_down.find("\"model_verdict\"").expect("the key stands");
+    let score_at = step_down.find("\"model_score\"").expect("the key stands");
+    let ancestry_at = step_down
+        .find("\"model_ancestry\"")
+        .expect("the key stands");
+    assert!(verdict_at < score_at && score_at < ancestry_at);
+    let consultation = record_block(&document, 4);
+    assert_eq!(consultation.matches("\n          \"").count(), 11);
+    assert!(consultation.contains("\"model_ancestry\": null"));
+    assert_eq!(document.matches("\"model_ancestry\"").count(), 2);
+    assert!(!document.contains("\"streak_ancestry\""));
+}
+
+#[test]
+fn streak_step_downs_without_a_verdict_ancestry_carry_no_ancestry() {
+    // Behind a fallback at the fall seat. The fallback spends
+    // the streak exactly as a below bar verdict does, and it
+    // carries no judgment, so it certifies nothing.
+    let dir = TestDir::new("ancestry-fallback-arm");
+    let switch = fall_seat_spend(&dir, Consultation::Silence);
+    switch.stage(&text("run-a"), &at(124)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(125)).unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.model_ancestry, None);
+    assert_eq!(record.fallback_taken, None);
+    assert_eq!(record.model_name, None);
+    let document = state_text(&dir);
+    assert!(!document.contains("de-escalate below bar"));
+    assert!(!record_block(&document, 5).contains("model_ancestry"));
+    // Behind an abstention at the fall seat, which carries no
+    // verdict and so certifies nothing either.
+    let dir = TestDir::new("ancestry-abstention-arm");
+    let switch = fall_seat_spend(
+        &dir,
+        Consultation::Abstention {
+            model_name: MODEL_NAME.to_string(),
+        },
+    );
+    switch.stage(&text("run-a"), &at(124)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(125)).unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.model_ancestry, None);
+    assert!(!state_text(&dir).contains("de-escalate below bar"));
+    // Behind no consultation at all, under the plain stage
+    // operation alone.
+    let dir = TestDir::new("ancestry-plain-arm");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let report = switch.stage(&text("run-a"), &at(123)).unwrap();
+    assert_eq!(report.stage, "warn");
+    let record = last_record(&switch);
+    assert_eq!(record.model_ancestry, None);
+    assert_eq!(record.model_name, None);
+}
+
+#[test]
+fn an_ancestry_step_down_reads_back_and_its_log_replays() {
+    let dir = TestDir::new("ancestry-round-trip");
+    certified_step_down(&dir);
+    let document = state_text(&dir);
+    // The consultation record restated in the ten key shape
+    // the landed writer wrote, so one log carries eight and
+    // ten and eleven key records side by side, each judged at
+    // its own shape.
+    let consultation = record_block(&document, 4);
+    let ten_key = consultation.replace(",\n          \"model_ancestry\": null", "");
+    assert_eq!(ten_key.matches("\n          \"").count(), 10);
+    let mixed = document.replace(&consultation, &ten_key);
+    let mixed_dir = TestDir::new("ancestry-round-trip-mixed");
+    std::fs::write(state_path(&mixed_dir), &mixed).expect("the mixed state is written");
+    let switch = make_switch(&mixed_dir);
+    let records = switch.log(&text("run-a")).unwrap();
+    assert_eq!(records.len(), 5);
+    assert_eq!(
+        records[4].model_ancestry.as_deref(),
+        Some("de-escalate below bar")
+    );
+    assert_eq!(records[3].model_ancestry, None);
+    // A further operation publishes the document, and the
+    // standing step down record's bytes stand unchanged
+    // through the republication, while the consultation
+    // record gains the added null field section 8 names.
+    let before = record_block(&state_text(&mixed_dir), 5);
+    switch
+        .prove(&text("run-a"), &text("working"), &at(126))
+        .unwrap();
+    let after = state_text(&mixed_dir);
+    assert_eq!(record_block(&after, 5), before);
+    assert!(record_block(&after, 4).contains("\"model_ancestry\": null"));
+}
+
+#[test]
+fn ancestry_damage_battery() {
+    // The honest certified document the first arms damage.
+    let dir = TestDir::new("ancestry-damage-base");
+    certified_step_down(&dir);
+    let certified = state_text(&dir);
+    // An ancestry value outside the literal and null.
+    assert_corrupt_state_text(&certified.replace(
+        "\"model_ancestry\": \"de-escalate below bar\"",
+        "\"model_ancestry\": \"de-escalate above bar\"",
+    ));
+    // An ancestry string standing beside a fallback
+    // population on a step down.
+    let step_down = record_block(&certified, 5);
+    let damaged_block = step_down
+        .replace(
+            "\"model_name\": null",
+            &format!("\"model_name\": \"{MODEL_NAME}\""),
+        )
+        .replace(
+            "\"fallback_taken\": null",
+            "\"fallback_taken\": \"silence\"",
+        );
+    assert_corrupt_state_text(&certified.replace(&step_down, &damaged_block));
+    // An ancestry string standing beside a verdict pattern on
+    // a step down, damaged from an endorsed step down the
+    // writer honestly produced.
+    let dir = TestDir::new("ancestry-damage-verdict-base");
+    let switch = switch_at_throttle_fall_seat(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.90, 0.2)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(123), Some(&transport), None)
+        .unwrap();
+    let endorsed = state_text(&dir);
+    let verdict_block = record_block(&endorsed, 4);
+    let damaged_block = verdict_block.replace(
+        "\"model_ancestry\": null",
+        "\"model_ancestry\": \"de-escalate below bar\"",
+    );
+    assert_corrupt_state_text(&endorsed.replace(&verdict_block, &damaged_block));
+    // An ancestry string standing on a hold record, damaged
+    // from a deterministic hold the writer honestly produced.
+    let dir = TestDir::new("ancestry-damage-hold-base");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 3600, 100, None, None);
+    switch.stage(&text("run-a"), &at(3700)).unwrap();
+    switch.stage(&text("run-a"), &at(5000)).unwrap();
+    let held = state_text(&dir);
+    let hold_block = record_block(&held, 3);
+    let damaged_block = hold_block.replace(
+        "\"fallback_taken\": null",
+        "\"fallback_taken\": null,\n          \"model_verdict\": null,\n          \"model_score\": null,\n          \"model_ancestry\": \"de-escalate below bar\"",
+    );
+    assert_corrupt_state_text(&held.replace(&hold_block, &damaged_block));
+    // An ancestry string standing on a rise record, damaged
+    // from a deterministic rise the writer honestly produced.
+    let dir = TestDir::new("ancestry-damage-rise-base");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(61)).unwrap();
+    let risen = state_text(&dir);
+    let rise_block = record_block(&risen, 2);
+    let damaged_block = rise_block.replace(
+        "\"fallback_taken\": null",
+        "\"fallback_taken\": null,\n          \"model_verdict\": null,\n          \"model_score\": null,\n          \"model_ancestry\": \"de-escalate below bar\"",
+    );
+    assert_corrupt_state_text(&risen.replace(&rise_block, &damaged_block));
+    // A run carrying the certification field at a value other
+    // than the boolean true, damaged from a document whose
+    // certification honestly stands.
+    let dir = TestDir::new("ancestry-damage-carry-base");
+    fall_seat_spend(&dir, verdict(Verdict::DeEscalate, 0.79, 0.2));
+    let carrying = state_text(&dir);
+    assert!(carrying.contains("\"streak_ancestry\": true"));
+    assert_corrupt_state_text(
+        &carrying.replace("\"streak_ancestry\": true", "\"streak_ancestry\": false"),
+    );
+    // A run carrying the certification field while its stage
+    // stands at none, damaged from a fresh registration.
+    let dir = TestDir::new("ancestry-damage-carry-none-base");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    let fresh = state_text(&dir);
+    assert_corrupt_state_text(&fresh.replace(
+        "\"killed\": false,",
+        "\"killed\": false,\n      \"streak_ancestry\": true,",
+    ));
+}
+
+#[test]
+fn a_pre_amendment_document_with_a_below_bar_ancestry_reads_in_the_null_pattern() {
+    let dir = TestDir::new("ancestry-pre-amendment");
+    certified_step_down(&dir);
+    let document = state_text(&dir);
+    // The certified document restated in the landed shapes,
+    // the consultation in the ten key shape and the step down
+    // in the eight, which is the document the landed writer
+    // produced for this sequence.
+    let stripped = document
+        .replace(",\n          \"model_ancestry\": null", "")
+        .replace(
+            ",\n          \"model_ancestry\": \"de-escalate below bar\"",
+            "",
+        );
+    assert!(!stripped.contains("model_ancestry"));
+    assert!(!stripped.contains("streak_ancestry"));
+    let pre_dir = TestDir::new("ancestry-pre-amendment-read");
+    std::fs::write(state_path(&pre_dir), &stripped).expect("the pre-amendment state is written");
+    let switch = make_switch(&pre_dir);
+    let records = switch.log(&text("run-a")).unwrap();
+    assert_eq!(records.len(), 5);
+    let step_down = records.last().expect("the step down stands");
+    assert_eq!(step_down.stage, "warn");
+    assert_eq!(step_down.model_ancestry, None);
+    assert_eq!(step_down.model_name, None);
+    assert_eq!(step_down.model_verdict, None);
+}
+
+#[test]
+fn streak_step_down_behind_a_held_seat_or_stale_consultation_carries_no_ancestry() {
+    // Behind a fresh held seat de-escalate at or above the
+    // bar. The consultation holds at warn, a proof then drops
+    // the warrant away, and two plain evaluations climb and
+    // step the stage down to none.
+    let dir = TestDir::new("ancestry-held-above-bar");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.99, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(62))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(63)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(64)).unwrap();
+    assert_eq!(report.stage, "none");
+    let record = last_record(&switch);
+    assert_eq!(record.stage, "none");
+    assert_eq!(record.model_ancestry, None);
+    assert!(!state_text(&dir).contains("streak_ancestry"));
+    // Behind a fresh held seat de-escalate below the bar, the
+    // same climb and step down.
+    let dir = TestDir::new("ancestry-held-below-bar");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.79, 0.5)]);
+    switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(62))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(63)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(64)).unwrap();
+    assert_eq!(report.stage, "none");
+    let record = last_record(&switch);
+    assert_eq!(record.model_ancestry, None);
+    assert!(!state_text(&dir).contains("streak_ancestry"));
+    // Behind a stale held seat de-escalate appended over a
+    // standing streak of 1. The constructed document stands
+    // at warn on a proof at 100 seconds and a hold record at
+    // 5000, so an evaluation stamped at 4000 stands stale
+    // against the reference instant of 5000 while its warrant
+    // stands at warn, the held seat in its stale form. The
+    // standing streak stands in the run's standing state and
+    // in no record, exactly as a counted streak stands, so
+    // the constructed document carries it in the standing
+    // field directly. The stale consultation appends and
+    // earns no fall credit and does not reset the streak, and
+    // a proof and a plain evaluation then complete the fall.
+    let dir = TestDir::new("ancestry-stale-held");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 3600, 100, None, None);
+    switch.stage(&text("run-a"), &at(3700)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(100))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(5000)).unwrap();
+    let staged = state_text(&dir).replace("\"clear_streak\": 0", "\"clear_streak\": 1");
+    std::fs::write(state_path(&dir), staged.as_bytes()).expect("the staged state is written");
+    assert_eq!(switch.log(&text("run-a")).unwrap().len(), 4);
+    let transport = fixture_transport(vec![verdict(Verdict::DeEscalate, 0.79, 0.2)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(4000), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "warn");
+    assert_eq!(transport.shown().len(), 1);
+    assert!(state_text(&dir).contains("\"clear_streak\": 1"));
+    switch
+        .prove(&text("run-a"), &text("working"), &at(4500))
+        .unwrap();
+    let report = switch.stage(&text("run-a"), &at(4600)).unwrap();
+    assert_eq!(report.stage, "none");
+    let record = last_record(&switch);
+    assert_eq!(record.stage, "none");
+    assert_eq!(record.model_ancestry, None);
+    assert_eq!(record.model_name, None);
+}
+
+#[test]
+fn the_certification_carry_stands_after_a_fall_seat_spend_and_is_consumed_by_the_step_down() {
+    let dir = TestDir::new("ancestry-carry-lifecycle");
+    let switch = fall_seat_spend(&dir, verdict(Verdict::DeEscalate, 0.79, 0.2));
+    // After the certifying act the published run carries the
+    // field at true, read from the state file directly.
+    assert!(state_text(&dir).contains("\"streak_ancestry\": true"));
+    // After the first plain advance that follows, it stands.
+    switch.stage(&text("run-a"), &at(124)).unwrap();
+    assert!(state_text(&dir).contains("\"streak_ancestry\": true"));
+    // At the step down's publish it stands absent, consumed.
+    switch.stage(&text("run-a"), &at(125)).unwrap();
+    assert!(!state_text(&dir).contains("streak_ancestry"));
+    // A second streak step down driven behind no new
+    // consultation stands in the null pattern.
+    switch
+        .prove(&text("run-a"), &text("working"), &at(126))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(127)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(128)).unwrap();
+    assert_eq!(report.stage, "none");
+    assert_eq!(last_record(&switch).model_ancestry, None);
+    // A further arm drives a held seat consultation between
+    // the spend and the step down, and the field stands
+    // absent from that act's publish onward, and the step
+    // down it later completes carries no ancestry.
+    let dir = TestDir::new("ancestry-carry-cleared-by-held");
+    let switch = fall_seat_spend(&dir, verdict(Verdict::DeEscalate, 0.79, 0.2));
+    assert!(state_text(&dir).contains("\"streak_ancestry\": true"));
+    switch
+        .prove(&text("run-a"), &text("working"), &at(124))
+        .unwrap();
+    let transport = fixture_transport(vec![verdict(Verdict::Hold, 0.9, 0.5)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(245), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert_eq!(transport.shown().len(), 1);
+    assert!(!state_text(&dir).contains("streak_ancestry"));
+    switch
+        .prove(&text("run-a"), &text("working"), &at(246))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(247)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(248)).unwrap();
+    assert_eq!(report.stage, "warn");
+    assert_eq!(last_record(&switch).model_ancestry, None);
+}
+
+#[test]
+fn writer_renders_the_eleven_key_shape_byte_for_byte() {
+    let dir = TestDir::new("ancestry-golden-bytes");
+    certified_step_down(&dir);
+    let document = state_text(&dir);
+    let consultation = "        {\n          \"seq\": 4,\n          \"kind\": \"stage\",\n          \"at\": \"2031-05-04T12:02:03+00:00\",\n          \"stage\": \"throttle\",\n          \"reasons\": [],\n          \"model_name\": \"jev-1.13.0\",\n          \"model_confidence\": 0.79,\n          \"fallback_taken\": null,\n          \"model_verdict\": \"de-escalate\",\n          \"model_score\": 0.2,\n          \"model_ancestry\": null\n        }";
+    assert!(
+        document.contains(consultation),
+        "the consultation record renders byte for byte, document was {document}"
+    );
+    let step_down = "        {\n          \"seq\": 5,\n          \"kind\": \"stage\",\n          \"at\": \"2031-05-04T12:02:05+00:00\",\n          \"stage\": \"warn\",\n          \"reasons\": [],\n          \"model_name\": null,\n          \"model_confidence\": null,\n          \"fallback_taken\": null,\n          \"model_verdict\": null,\n          \"model_score\": null,\n          \"model_ancestry\": \"de-escalate below bar\"\n        }";
+    assert!(
+        document.contains(step_down),
+        "the step down record renders byte for byte, document was {document}"
+    );
+}
+
 fn write_helper(dir: &TestDir, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let path = dir.path().join(name);
