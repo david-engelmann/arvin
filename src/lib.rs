@@ -2715,7 +2715,9 @@ fn validate_run(value: &Value) -> Result<Run> {
     // belongs to.
     let streak_ancestry = match map.get("streak_ancestry") {
         None => false,
-        Some(Value::Bool(true)) if !killed && !matches!(stage.as_str(), "none" | "kill") => true,
+        Some(Value::Bool(true)) if matches!(stage.as_str(), "warn" | "throttle" | "cut tools") => {
+            true
+        }
         Some(Value::Bool(_)) => {
             return Err(corrupt(format!(
                 "run {id_repr} holds a streak ancestry certification outside \
