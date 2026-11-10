@@ -247,10 +247,13 @@ fn instant_argument(text: &str) -> PyResult<Instant> {
 
 /// Translate one decision record into a plain dictionary
 /// carrying every field the record stands in the state file
-/// with. The five model fields are carried exactly as they
-/// stand in the file, null in every record the deterministic
+/// with. The model fields are carried exactly as they stand
+/// in the file, null in every record the deterministic
 /// operations write and populated on the stage record of a
-/// consultation under DM-17.
+/// consultation under DM-17. The ancestry field of DM-22
+/// stands at its literal on a certified streak step down
+/// and at null on every other record, a record whose shape
+/// does not carry it included.
 fn record_dict(py: Python<'_>, record: &Record) -> PyResult<Py<PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("seq", record.seq)?;
@@ -263,6 +266,7 @@ fn record_dict(py: Python<'_>, record: &Record) -> PyResult<Py<PyDict>> {
     dict.set_item("fallback_taken", &record.fallback_taken)?;
     dict.set_item("model_verdict", &record.model_verdict)?;
     dict.set_item("model_score", record.model_score)?;
+    dict.set_item("model_ancestry", &record.model_ancestry)?;
     Ok(dict.unbind())
 }
 
@@ -300,6 +304,7 @@ fn register_dict(
         model_confidence: None,
         model_score: None,
         fallback_taken: None,
+        model_ancestry: None,
     };
     let dict = PyDict::new(py);
     dict.set_item("id", run)?;
