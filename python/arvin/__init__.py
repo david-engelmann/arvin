@@ -22,10 +22,12 @@ stage_with_model call returns the same report for an
 evaluation that consulted a model, the spend call returns
 the accumulated spend, the pull call returns the stage name,
 and the log call returns the decision records with every
-field they stand in the state file with, the five model
-fields among them, carried exactly as they stand in the
-file, null in every record the deterministic operations
-write and populated on the stage record of a consultation.
+field they stand in the state file with, the model fields
+among them, carried exactly as they stand in the file,
+null in every record the deterministic operations write
+and populated on the stage record of a consultation, and
+the ancestry field standing at its literal on a certified
+streak step down and at null on every other record.
 """
 
 from ._arvin import (
