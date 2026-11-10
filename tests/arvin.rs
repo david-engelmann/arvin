@@ -3607,6 +3607,47 @@ fn ancestry_damage_battery() {
 }
 
 #[test]
+fn a_run_carrying_the_certification_at_cut_budget_is_refused() {
+    // A run honestly risen to cut budget, its state text
+    // damaged by hand to stand the certification field on
+    // it. The writer sets the field only at a middle stage,
+    // so the reader refuses the document as corruption in
+    // the same standing as the battery's none stage arm,
+    // the refusal names the certification's recorded
+    // standing, and the state bytes stand unchanged.
+    let dir = TestDir::new("ancestry-damage-carry-cut-budget-base");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 60, 100, None, None);
+    let report = switch.stage(&text("run-a"), &at(241)).unwrap();
+    assert_eq!(report.stage, "cut budget");
+    let risen = state_text(&dir);
+    // The undamaged document reads clean, so the refusal
+    // below is the damaged field's alone.
+    switch.log(&text("run-a")).unwrap();
+    let damaged = risen.replace(
+        "\"killed\": false,",
+        "\"killed\": false,\n      \"streak_ancestry\": true,",
+    );
+    assert_ne!(damaged, risen);
+    assert_corrupt_state_text(&damaged);
+    let dir = TestDir::new("ancestry-damage-carry-cut-budget-message");
+    std::fs::write(state_path(&dir), &damaged).expect("the damaged state is written");
+    let switch = make_switch(&dir);
+    let err = switch.log(&text("run-a")).unwrap_err();
+    assert!(
+        matches!(err, Error::Corrupt(_)),
+        "expected a corrupt state error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("streak ancestry certification outside its recorded standing"),
+        "expected the refusal to name the certification's recorded standing, got {:?}",
+        err.message()
+    );
+    assert_eq!(state_text(&dir), damaged);
+}
+
+#[test]
 fn a_pre_amendment_document_with_a_below_bar_ancestry_reads_in_the_null_pattern() {
     let dir = TestDir::new("ancestry-pre-amendment");
     certified_step_down(&dir);
