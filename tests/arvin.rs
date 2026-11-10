@@ -3583,6 +3583,27 @@ fn ancestry_damage_battery() {
         "\"killed\": false,",
         "\"killed\": false,\n      \"streak_ancestry\": true,",
     ));
+    // An ancestry string standing on a step down from cut
+    // budget, a stage no fall seat stands at, damaged from a
+    // deterministic step down off a missed proof entry to
+    // cut budget the writer honestly produced.
+    let dir = TestDir::new("ancestry-damage-cut-budget-base");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 60, 100, None, None);
+    switch.stage(&text("run-a"), &at(241)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(241))
+        .unwrap();
+    switch.stage(&text("run-a"), &at(242)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(243)).unwrap();
+    assert_eq!(report.stage, "cut tools");
+    let fallen = state_text(&dir);
+    let fallen_block = record_block(&fallen, 4);
+    let damaged_block = fallen_block.replace(
+        "\"fallback_taken\": null",
+        "\"fallback_taken\": null,\n          \"model_verdict\": null,\n          \"model_score\": null,\n          \"model_ancestry\": \"de-escalate below bar\"",
+    );
+    assert_corrupt_state_text(&fallen.replace(&fallen_block, &damaged_block));
 }
 
 #[test]

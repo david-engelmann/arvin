@@ -2488,6 +2488,23 @@ fn validate_stage_record_against_warrant(
             // bar and the freshness the pattern rests on
             // stand in no record, and the certification rests
             // on the writer that made it at the fall seat.
+            // The ancestry pattern stands admitted only on a
+            // step down from a middle stage, as DM-23 states,
+            // because the fall seat it certifies stands only
+            // at a middle stage and the certification is
+            // consumed by the step down from that stage. A
+            // step down from cut budget carrying the pattern
+            // therefore stands behind no writer.
+            ModelPattern::Null
+                if record.model_ancestry.is_some() && !matches!(previous_index, 1..=3) =>
+            {
+                return Err(corrupt(format!(
+                    "a stage record in the log of run {id_repr} steps down from \
+                     {previous_stage} to {} carrying the ancestry pattern of \
+                     DM-22 from a stage no fall seat of DM-13 stands at",
+                    record.stage
+                )))
+            }
             ModelPattern::Null => {}
             ModelPattern::Verdict
                 if record.model_ancestry.is_none()
