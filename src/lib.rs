@@ -113,6 +113,44 @@ const RECORD_KEYS_EXTENDED: [&str; 10] = [
     "model_verdict",
     "model_score",
 ];
+/// The eleven key shape of the Round 7 amendment, the
+/// extended shape plus the ancestry field of DM-22.
+const RECORD_KEYS_ANCESTRY: [&str; 11] = [
+    "seq",
+    "kind",
+    "at",
+    "stage",
+    "reasons",
+    "model_name",
+    "model_confidence",
+    "fallback_taken",
+    "model_verdict",
+    "model_score",
+    "model_ancestry",
+];
+/// The one ancestry value the ancestry pattern of DM-22
+/// carries, a fixed literal of the format naming the below
+/// bar fall seat de-escalate that stands in a step down's
+/// ancestry, and no other value stands in the field.
+const ANCESTRY_BELOW_BAR: &str = "de-escalate below bar";
+/// The run key set that carries the standing certification
+/// of DM-23, the landed twelve keys plus streak_ancestry,
+/// admitted only while a certification stands unconsumed.
+const RUN_KEYS_WITH_CARRY: [&str; 13] = [
+    "id",
+    "registered_at",
+    "proof_interval_seconds",
+    "missed_proof_limit",
+    "soft_ceiling",
+    "hard_ceiling",
+    "spend_total",
+    "last_proof_at",
+    "stage",
+    "clear_streak",
+    "killed",
+    "streak_ancestry",
+    "log",
+];
 
 /// The model the escalation slice stands pinned to, named by
 /// the roadmap and reached only through a caller supplied
@@ -1673,6 +1711,10 @@ pub fn validate_note(value: &Value) -> Result<()> {
 /// stand only in the extended shape of a stage record that
 /// carries a consultation, so the typed form holds all five
 /// and the writer chooses the shape by the record it writes.
+/// The ancestry field of DM-22 stands beside the five in the
+/// eleven key shape, on a stage record that carries a
+/// consultation or an ancestry pattern, and stands null by
+/// absence in every other shape.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub seq: u64,
@@ -1685,6 +1727,7 @@ pub struct Record {
     pub model_confidence: Option<f64>,
     pub model_score: Option<f64>,
     pub fallback_taken: Option<String>,
+    pub model_ancestry: Option<String>,
 }
 
 /// Which of the three patterns of DM-17 the model fields of a
@@ -1743,6 +1786,13 @@ struct Run {
     stage: String,
     clear_streak: JsonInt,
     killed: bool,
+    /// The standing certification of DM-23, set by a fall
+    /// seat consultation that answered de-escalate below the
+    /// bar and standing only until the step down it certifies
+    /// consumes it or an intervening act clears it. It stands
+    /// in no record and no reader re-derives it, in the
+    /// manner of the clear streak itself.
+    streak_ancestry: bool,
     log: Vec<Record>,
 }
 
@@ -1781,10 +1831,13 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
     };
     // A record stands in the landed eight key shape or, for a
     // stage record carrying a consultation under DM-17, in the
-    // extended ten key shape, and in no other shape. The kind
-    // is read before the shape is judged because the extended
-    // shape stands open to stage records alone.
-    let extended = keys_match(&map, &RECORD_KEYS_EXTENDED);
+    // extended ten key shape, or, under the Round 7 amendment,
+    // in the eleven key shape that adds the ancestry field of
+    // DM-22, and in no other shape. The kind is read before
+    // the shape is judged because the extended shapes stand
+    // open to stage records alone.
+    let with_ancestry = keys_match(&map, &RECORD_KEYS_ANCESTRY);
+    let extended = with_ancestry || keys_match(&map, &RECORD_KEYS_EXTENDED);
     if !extended && !keys_match(&map, &RECORD_KEYS) {
         return Err(corrupt(
             "a log record does not carry exactly the recorded fields".to_string(),
@@ -1851,109 +1904,136 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             return Err(corrupt("a log record names one reason twice".to_string()));
         }
     }
-    let (model_name, model_verdict, model_confidence, model_score, fallback_taken) = if extended {
-        if kind != "stage" {
-            return Err(corrupt(format!(
-                "a {kind} record carries the extended model fields, which \
-                     stand only on a stage record"
-            )));
-        }
-        let model_name = match map["model_name"] {
-            Value::Null => None,
-            Value::Str(text) if model_name_shape_ok(text) => Some(text.clone()),
-            _ => {
-                return Err(corrupt(
-                    "a stage record carries a model name outside the recorded \
-                         shape"
-                        .to_string(),
-                ))
-            }
-        };
-        let model_verdict = match map["model_verdict"] {
-            Value::Null => None,
-            Value::Str(text) if VERDICT_LABELS.contains(&text.as_str()) => Some(text.clone()),
-            _ => {
-                return Err(corrupt(
-                    "a stage record carries a model verdict outside the \
-                         recorded names"
-                        .to_string(),
-                ))
-            }
-        };
-        let model_confidence = match map["model_confidence"] {
-            Value::Null => None,
-            value => match model_number_unit(value) {
-                Some(number) => Some(number),
-                None => {
-                    return Err(corrupt(
-                        "a stage record carries a model confidence outside \
-                             the range from 0 to 1"
-                            .to_string(),
-                    ))
-                }
-            },
-        };
-        let model_score = match map["model_score"] {
-            Value::Null => None,
-            value => match model_number_unit(value) {
-                Some(number) => Some(number),
-                None => {
-                    return Err(corrupt(
-                        "a stage record carries a model score outside the \
-                             range from 0 to 1"
-                            .to_string(),
-                    ))
-                }
-            },
-        };
-        let fallback_taken = match map["fallback_taken"] {
-            Value::Null => None,
-            Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
-            _ => {
-                return Err(corrupt(
-                    "a stage record carries a fallback outside the recorded \
-                         classes"
-                        .to_string(),
-                ))
-            }
-        };
-        let verdict_pattern = model_name.is_some()
-            && model_verdict.is_some()
-            && model_confidence.is_some()
-            && model_score.is_some()
-            && fallback_taken.is_none();
-        let fallback_pattern = model_name.is_some()
-            && fallback_taken.is_some()
-            && model_verdict.is_none()
-            && model_confidence.is_none()
-            && model_score.is_none();
-        let null_pattern = model_name.is_none()
-            && model_verdict.is_none()
-            && model_confidence.is_none()
-            && model_score.is_none()
-            && fallback_taken.is_none();
-        if !verdict_pattern && !fallback_pattern && !null_pattern {
-            return Err(corrupt(
-                "a stage record carries its model fields in no recorded pattern".to_string(),
-            ));
-        }
-        (
-            model_name,
-            model_verdict,
-            model_confidence,
-            model_score,
-            fallback_taken,
-        )
-    } else {
-        for field in RESERVED_FIELDS {
-            if !matches!(map[field], Value::Null) {
+    let (model_name, model_verdict, model_confidence, model_score, fallback_taken, model_ancestry) =
+        if extended {
+            if kind != "stage" {
                 return Err(corrupt(format!(
-                    "a log record carries a value in the reserved field {field}"
+                    "a {kind} record carries the extended model fields, which \
+                     stand only on a stage record"
                 )));
             }
-        }
-        (None, None, None, None, None)
-    };
+            let model_name = match map["model_name"] {
+                Value::Null => None,
+                Value::Str(text) if model_name_shape_ok(text) => Some(text.clone()),
+                _ => {
+                    return Err(corrupt(
+                        "a stage record carries a model name outside the recorded \
+                         shape"
+                            .to_string(),
+                    ))
+                }
+            };
+            let model_verdict = match map["model_verdict"] {
+                Value::Null => None,
+                Value::Str(text) if VERDICT_LABELS.contains(&text.as_str()) => Some(text.clone()),
+                _ => {
+                    return Err(corrupt(
+                        "a stage record carries a model verdict outside the \
+                         recorded names"
+                            .to_string(),
+                    ))
+                }
+            };
+            let model_confidence = match map["model_confidence"] {
+                Value::Null => None,
+                value => match model_number_unit(value) {
+                    Some(number) => Some(number),
+                    None => {
+                        return Err(corrupt(
+                            "a stage record carries a model confidence outside \
+                             the range from 0 to 1"
+                                .to_string(),
+                        ))
+                    }
+                },
+            };
+            let model_score = match map["model_score"] {
+                Value::Null => None,
+                value => match model_number_unit(value) {
+                    Some(number) => Some(number),
+                    None => {
+                        return Err(corrupt(
+                            "a stage record carries a model score outside the \
+                             range from 0 to 1"
+                                .to_string(),
+                        ))
+                    }
+                },
+            };
+            let fallback_taken = match map["fallback_taken"] {
+                Value::Null => None,
+                Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
+                _ => {
+                    return Err(corrupt(
+                        "a stage record carries a fallback outside the recorded \
+                         classes"
+                            .to_string(),
+                    ))
+                }
+            };
+            let model_ancestry = if with_ancestry {
+                match map["model_ancestry"] {
+                    Value::Null => None,
+                    Value::Str(text) if text == ANCESTRY_BELOW_BAR => Some(text.clone()),
+                    _ => {
+                        return Err(corrupt(
+                            "a stage record carries a model ancestry outside the \
+                             recorded values"
+                                .to_string(),
+                        ))
+                    }
+                }
+            } else {
+                None
+            };
+            let verdict_pattern = model_name.is_some()
+                && model_verdict.is_some()
+                && model_confidence.is_some()
+                && model_score.is_some()
+                && fallback_taken.is_none();
+            let fallback_pattern = model_name.is_some()
+                && fallback_taken.is_some()
+                && model_verdict.is_none()
+                && model_confidence.is_none()
+                && model_score.is_none();
+            let null_pattern = model_name.is_none()
+                && model_verdict.is_none()
+                && model_confidence.is_none()
+                && model_score.is_none()
+                && fallback_taken.is_none();
+            if !verdict_pattern && !fallback_pattern && !null_pattern {
+                return Err(corrupt(
+                    "a stage record carries its model fields in no recorded pattern".to_string(),
+                ));
+            }
+            // The ancestry field of DM-22 stands at its literal
+            // only beside the null pattern, because a step down is
+            // either the consultation's own endorsed act or a
+            // later deterministic act the consultation stands
+            // behind, and never both.
+            if model_ancestry.is_some() && !null_pattern {
+                return Err(corrupt(
+                    "a stage record carries its model fields in no recorded pattern".to_string(),
+                ));
+            }
+            (
+                model_name,
+                model_verdict,
+                model_confidence,
+                model_score,
+                fallback_taken,
+                model_ancestry,
+            )
+        } else {
+            for field in RESERVED_FIELDS {
+                if !matches!(map[field], Value::Null) {
+                    return Err(corrupt(format!(
+                        "a log record carries a value in the reserved field {field}"
+                    )));
+                }
+            }
+            (None, None, None, None, None, None)
+        };
     if matches!(kind.as_str(), "registered" | "proof" | "spend") && !reasons.is_empty() {
         return Err(corrupt(format!("a {kind} record names reasons")));
     }
@@ -1978,6 +2058,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
         model_confidence,
         model_score,
         fallback_taken,
+        model_ancestry,
     })
 }
 
@@ -2397,9 +2478,20 @@ fn validate_stage_record_against_warrant(
             )));
         }
         match pattern {
+            // The null pattern stands alone, and it stands
+            // with the ancestry pattern of DM-22 beside it,
+            // the five fields null and the ancestry field at
+            // its literal. The join judges that population
+            // for well-formedness alone under DM-23. It does
+            // not re-derive the ancestry from the records
+            // before the step down, because the seat and the
+            // bar and the freshness the pattern rests on
+            // stand in no record, and the certification rests
+            // on the writer that made it at the fall seat.
             ModelPattern::Null => {}
             ModelPattern::Verdict
-                if matches!(previous_index, 1..=3)
+                if record.model_ancestry.is_none()
+                    && matches!(previous_index, 1..=3)
                     && record.model_verdict.as_deref() == Some("de-escalate")
                     && record
                         .model_confidence
@@ -2414,6 +2506,16 @@ fn validate_stage_record_against_warrant(
             }
         }
     } else {
+        // The ancestry pattern of DM-22 stands open to a step
+        // down record alone, so a hold or a rise carrying a
+        // standing ancestry value stands behind no writer.
+        if record.model_ancestry.is_some() {
+            return Err(corrupt(format!(
+                "a stage record in the log of run {id_repr} stands at stage {} \
+                 carrying a model ancestry no step down carries",
+                record.stage
+            )));
+        }
         match pattern {
             ModelPattern::Null => {
                 if !possible.contains(&new_index) {
@@ -2485,8 +2587,11 @@ fn validate_stored_ceiling(
 }
 
 fn validate_run(value: &Value) -> Result<Run> {
+    // A run carries exactly the landed twelve keys or, while
+    // a certification of DM-23 stands unconsumed, the same
+    // keys plus streak_ancestry, and no third key set stands.
     let map = match object_map(value) {
-        Some(map) if keys_match(&map, &RUN_KEYS) => map,
+        Some(map) if keys_match(&map, &RUN_KEYS) || keys_match(&map, &RUN_KEYS_WITH_CARRY) => map,
         _ => {
             return Err(corrupt(
                 "a run does not carry exactly the recorded fields".to_string(),
@@ -2585,6 +2690,27 @@ fn validate_run(value: &Value) -> Result<Run> {
             "run {id_repr} holds a killed flag that disagrees with its stage"
         )));
     }
+    // The standing certification of DM-23 carries the
+    // boolean true and no other value, and it stands only on
+    // a run at a middle stage that stands not killed, because
+    // the writer sets it only at a middle stage and clears it
+    // on every act that ends or leaves the stage history it
+    // belongs to.
+    let streak_ancestry = match map.get("streak_ancestry") {
+        None => false,
+        Some(Value::Bool(true)) if !killed && !matches!(stage.as_str(), "none" | "kill") => true,
+        Some(Value::Bool(_)) => {
+            return Err(corrupt(format!(
+                "run {id_repr} holds a streak ancestry certification outside \
+                 its recorded standing"
+            )))
+        }
+        Some(_) => {
+            return Err(corrupt(format!(
+                "run {id_repr} holds a streak ancestry that is not the boolean true"
+            )))
+        }
+    };
     let log: Vec<Record> = match map["log"] {
         Value::Array(items) if !items.is_empty() => {
             let mut records = Vec::new();
@@ -2626,6 +2752,7 @@ fn validate_run(value: &Value) -> Result<Run> {
         stage,
         clear_streak,
         killed,
+        streak_ancestry,
         log,
     })
 }
@@ -2724,12 +2851,21 @@ fn document_to_value(document: &Document) -> Value {
                                 .map_or(Value::Null, Value::Str),
                         ),
                     ];
-                    // The extended shape of DM-17 stands only on
-                    // a stage record that carries a consultation,
-                    // judged by any of its five model fields
-                    // standing populated, because a consultation
-                    // record always carries its model name.
-                    if record.kind == "stage" && record.model_name.is_some() {
+                    // The extended shape stands only on a stage
+                    // record that carries a consultation, judged
+                    // by any of its five model fields standing
+                    // populated, because a consultation record
+                    // always carries its model name, or that
+                    // carries the ancestry pattern of DM-22.
+                    // From the Round 7 amendment the writer
+                    // writes that shape in its eleven key form
+                    // uniformly, the ancestry field appended
+                    // last at null on a consultation record and
+                    // at its literal on an ancestry step down,
+                    // and the ten key shape for no record.
+                    if record.kind == "stage"
+                        && (record.model_name.is_some() || record.model_ancestry.is_some())
+                    {
                         pairs.push((
                             "model_verdict".to_string(),
                             record.model_verdict.clone().map_or(Value::Null, Value::Str),
@@ -2738,11 +2874,18 @@ fn document_to_value(document: &Document) -> Value {
                             "model_score".to_string(),
                             record.model_score.map_or(Value::Null, Value::Float),
                         ));
+                        pairs.push((
+                            "model_ancestry".to_string(),
+                            record
+                                .model_ancestry
+                                .clone()
+                                .map_or(Value::Null, Value::Str),
+                        ));
                     }
                     Value::Object(pairs)
                 })
                 .collect();
-            Value::Object(vec![
+            let mut run_pairs: Vec<(String, Value)> = vec![
                 ("id".to_string(), Value::Str(run.id.clone())),
                 (
                     "registered_at".to_string(),
@@ -2780,8 +2923,17 @@ fn document_to_value(document: &Document) -> Value {
                     json_int_value(&run.clear_streak),
                 ),
                 ("killed".to_string(), Value::Bool(run.killed)),
-                ("log".to_string(), Value::Array(records)),
-            ])
+            ];
+            // The standing certification of DM-23 renders
+            // only while it stands, after killed and before
+            // log, so a run carrying no standing certification
+            // renders byte for byte as the landed writer
+            // renders it.
+            if run.streak_ancestry {
+                run_pairs.push(("streak_ancestry".to_string(), Value::Bool(true)));
+            }
+            run_pairs.push(("log".to_string(), Value::Array(records)));
+            Value::Object(run_pairs)
         })
         .collect();
     Value::Object(vec![
@@ -3961,6 +4113,20 @@ impl Switch {
         stage: &str,
         reasons: &[&str],
     ) -> Result<()> {
+        Self::append_record_with_ancestry(run, kind, now, stage, reasons, None)
+    }
+
+    /// Append a plain record, carrying the ancestry pattern
+    /// of DM-22 where the step down it writes stands certified
+    /// under DM-23, and the null pattern everywhere else.
+    fn append_record_with_ancestry(
+        run: &mut Run,
+        kind: &str,
+        now: &Instant,
+        stage: &str,
+        reasons: &[&str],
+        model_ancestry: Option<String>,
+    ) -> Result<()> {
         let at = format_instant(now)?;
         run.log.push(Record {
             seq: run.log.len() as u64 + 1,
@@ -3973,6 +4139,7 @@ impl Switch {
             model_confidence: None,
             model_score: None,
             fallback_taken: None,
+            model_ancestry,
         });
         Ok(())
     }
@@ -3998,6 +4165,7 @@ impl Switch {
             model_confidence: fields.model_confidence,
             model_score: fields.model_score,
             fallback_taken: fields.fallback_taken,
+            model_ancestry: None,
         });
         Ok(())
     }
@@ -4059,6 +4227,7 @@ impl Switch {
                 stage: "none".to_string(),
                 clear_streak: JsonInt::Small(0),
                 killed: false,
+                streak_ancestry: false,
                 log: Vec::new(),
             };
             Self::append_record(&mut run, "registered", now, "none", &[])?;
@@ -4148,6 +4317,10 @@ impl Switch {
         run.stage = "kill".to_string();
         run.killed = true;
         run.clear_streak = JsonInt::Small(0);
+        // A pull ends the run, and the certification of DM-23
+        // belongs to the stage history it closes, so it clears
+        // with the streak.
+        run.streak_ancestry = false;
         Self::append_record(run, "pull", now, "kill", &["operator pull"])?;
         self.publish(&document, &guard)?;
         Ok("kill".to_string())
@@ -4275,6 +4448,14 @@ impl Switch {
                             .model_confidence
                             .is_some_and(|confidence| confidence >= ESCALATION_BAR);
                     let run = &mut document.runs[index];
+                    // A held seat consultation is no certifying
+                    // act under DM-23, at any verdict and any
+                    // confidence and any freshness, so it clears
+                    // the standing certification as it appends
+                    // its record, because a consultation that
+                    // intervenes between the certifying spend
+                    // and the step down ends the ancestry.
+                    run.streak_ancestry = false;
                     if applies {
                         run.stage = STAGES[recorded + 1].to_string();
                     }
@@ -4310,11 +4491,28 @@ impl Switch {
                                 .hard_ceiling
                                 .is_none_or(|ceiling| run.spend_total < ceiling)
                     };
+                    // The certification of DM-23 is decided
+                    // here, at the fall seat act itself, and
+                    // nowhere else. Where the consultation
+                    // answers de-escalate with confidence below
+                    // the de-escalation bar, the writer sets
+                    // the certification in the same act that
+                    // appends the consultation record and
+                    // spends the streak. Every other fall seat
+                    // outcome clears it, an endorsed step down,
+                    // a fallback, an abstention, and an escalate
+                    // verdict among them, because none of those
+                    // is the ancestry the pattern names.
+                    let certifies = fields.model_verdict.as_deref() == Some("de-escalate")
+                        && fields
+                            .model_confidence
+                            .is_some_and(|confidence| confidence < DE_ESCALATION_BAR);
                     let run = &mut document.runs[index];
                     if endorsed {
                         run.stage = STAGES[recorded - 1].to_string();
                     }
                     run.clear_streak = JsonInt::Small(0);
+                    run.streak_ancestry = certifies;
                     let stage = run.stage.clone();
                     Self::append_consultation_record(run, now, &stage, &reasons, fields)?;
                 }
@@ -4324,6 +4522,10 @@ impl Switch {
             let run = &mut document.runs[index];
             run.stage = STAGES[warranted].to_string();
             run.clear_streak = JsonInt::Small(0);
+            // A rise appends a stage record and resets the
+            // streak, so it clears any standing certification
+            // under DM-23 as it does so.
+            run.streak_ancestry = false;
             if run.stage == "kill" {
                 run.killed = true;
             }
@@ -4334,9 +4536,17 @@ impl Switch {
             let run = &mut document.runs[index];
             if !stale && !run.clear_streak.is_zero() {
                 run.clear_streak = JsonInt::Small(0);
+                // A streak reset outside the fall seat clears
+                // the certification with the streak under
+                // DM-23.
+                run.streak_ancestry = false;
                 changed = true;
             }
             if recorded != stage_index("none") {
+                // A hold appended on this branch is a stage
+                // record, so it clears any standing
+                // certification under DM-23.
+                run.streak_ancestry = false;
                 let stage = run.stage.clone();
                 Self::append_record(run, "stage", now, &stage, &reasons)?;
                 changed = true;
@@ -4348,8 +4558,23 @@ impl Switch {
             if run.clear_streak.cmp_i128(2) != Ordering::Less {
                 run.stage = STAGES[recorded - 1].to_string();
                 run.clear_streak = JsonInt::Small(0);
+                // The step down this branch writes consumes
+                // any standing certification of DM-23. Where
+                // the certification stands, the record carries
+                // the ancestry pattern. Where it does not, the
+                // record carries the null pattern exactly as
+                // before the amendment. Either way the act
+                // clears the field as it resets the streak, so
+                // one certification certifies exactly one step
+                // down.
+                let ancestry = if run.streak_ancestry {
+                    Some(ANCESTRY_BELOW_BAR.to_string())
+                } else {
+                    None
+                };
+                run.streak_ancestry = false;
                 let stage = run.stage.clone();
-                Self::append_record(run, "stage", now, &stage, &reasons)?;
+                Self::append_record_with_ancestry(run, "stage", now, &stage, &reasons, ancestry)?;
             }
         }
         if changed {
