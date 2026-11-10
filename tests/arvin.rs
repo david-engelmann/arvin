@@ -4173,3 +4173,120 @@ fn cli_model_judge_timeout_past_the_widest_duration_refuses_at_exit_2() {
     );
     assert_eq!(state_bytes(&dir), before, "the state bytes stand");
 }
+
+#[test]
+fn a_helper_written_from_the_contract_statement_alone_interoperates() {
+    // The stranger pin of DM-21. The helper below is written
+    // from the obligation's statement alone. It finds the
+    // payload path standing after the --raw-payload flag in
+    // its arguments, greps the payload file for the pinned
+    // model name, records the path it was handed, and prints
+    // one verdict body in the stated grammar. Driven through
+    // the command line stage command's judge form at the
+    // constructed held seat, its consultation must land in
+    // the appended record and in the printed lines, and the
+    // payload file must no longer stand after the call.
+    let dir = TestDir::new("model-cli-stranger-helper");
+    let switch = cli_switch_at_warn(&dir);
+    let marker = dir.path().join("payload-path.txt");
+    let body = format!(
+        "#!/bin/sh\npayload=\"\"\nprev=\"\"\nfor arg in \"$@\"; do\n  if [ \"$prev\" = \"--raw-payload\" ]; then payload=\"$arg\"; fi\n  prev=\"$arg\"\ndone\ngrep -q \"{MODEL_NAME}\" \"$payload\" || exit 3\nprintf '%s' \"$payload\" > \"{}\"\nprintf '%s' '{{\"model\": \"{MODEL_NAME}\", \"choice\": {{\"label\": \"escalate\", \"confidence\": 0.9}}, \"score\": {{\"level\": 7}}}}'\n",
+        marker.display()
+    );
+    let helper = write_helper(&dir, "stranger.sh", &body);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &["--state", &state, "stage", "run-a", "--judge", &helper_text],
+        0,
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.contains(&"stage throttle"), "{stdout}");
+    assert!(
+        lines.contains(&format!("model {MODEL_NAME}").as_str()),
+        "{stdout}"
+    );
+    assert!(lines.contains(&"verdict escalate"), "{stdout}");
+    assert!(lines.contains(&"confidence 0.9"), "{stdout}");
+    let record = last_record(&switch);
+    assert_eq!(record.kind, "stage");
+    assert_eq!(record.stage, "throttle");
+    assert_eq!(record.model_name.as_deref(), Some(MODEL_NAME));
+    assert_eq!(record.model_verdict.as_deref(), Some("escalate"));
+    assert_eq!(record.model_confidence, Some(0.9));
+    assert_eq!(record.model_score, Some(6.0 / 9.0));
+    assert_eq!(record.fallback_taken, None);
+    // The payload file the helper was handed is removed when
+    // the call ends.
+    let payload_path = std::fs::read_to_string(&marker).unwrap();
+    assert!(
+        !Path::new(&payload_path).exists(),
+        "the payload file at {payload_path} no longer stands"
+    );
+}
+
+#[test]
+fn contract_states_the_reply_bound_the_transport_enforces() {
+    // DM-21 states the reply bound as a number in the
+    // contract. This pin reads that number out of the
+    // obligation's text and holds it against the transport by
+    // behaviour, so the contract number and the code number
+    // are held together by what the transport does and not by
+    // a copied constant. A body standing one byte past the
+    // stated bound lands a malformed reply, and a verdict
+    // body padded inside the bound, the padding carried in a
+    // further field the grammar does not refuse, lands its
+    // verdict.
+    let contract_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("CONTRACT.md");
+    let contract = std::fs::read_to_string(&contract_path).expect("the contract stands");
+    let at = contract
+        .find("Obligation DM-21 covers the judge helper invocation layer.")
+        .expect("DM-21 stands in the contract");
+    let statement = &contract[at..];
+    let past = statement
+        .find("stands past ")
+        .expect("the statement states its bound")
+        + "stands past ".len();
+    let digits: String = statement[past..]
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let bound: usize = digits.parse().expect("the stated bound is a number");
+    assert!(bound > 0, "the stated bound stands positive");
+    let dir = TestDir::new("model-subprocess-stated-bound");
+    let verdict = format!(
+        "{{\"model\": \"{MODEL_NAME}\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}, \"pad\": \""
+    );
+    let suffix = "\"}";
+    // One byte past the stated bound, judged on the counted
+    // total, is a malformed reply.
+    let over_pad = bound + 1 - verdict.len() - suffix.len();
+    let over_body = format!(
+        "#!/bin/sh\nprintf '%s' '{verdict}'\nhead -c {over_pad} /dev/zero | tr '\\0' ' '\nprintf '%s' '{suffix}'\n"
+    );
+    let helper = write_helper(&dir, "over.sh", &over_body);
+    let transport = subprocess(helper, std::time::Duration::from_secs(10));
+    assert_eq!(
+        transport.consult("vignette"),
+        Consultation::MalformedReply,
+        "a body one byte past the stated bound lands malformed"
+    );
+    // Inside the stated bound the same body lands its
+    // verdict, its padding field unrefused.
+    let under_pad = bound - verdict.len() - suffix.len() - 1;
+    let under_body = format!(
+        "#!/bin/sh\nprintf '%s' '{verdict}'\nhead -c {under_pad} /dev/zero | tr '\\0' ' '\nprintf '%s' '{suffix}'\n"
+    );
+    let helper = write_helper(&dir, "under.sh", &under_body);
+    let transport = subprocess(helper, std::time::Duration::from_secs(10));
+    assert_eq!(
+        transport.consult("vignette"),
+        Consultation::Verdict {
+            model_name: MODEL_NAME.to_string(),
+            verdict: Verdict::Hold,
+            confidence: 0.5,
+            score: 4.0 / 9.0,
+        },
+        "a verdict body padded inside the stated bound lands its verdict"
+    );
+}

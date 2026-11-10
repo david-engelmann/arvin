@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use arvin::{Error, Instant, Switch, Value};
+use arvin::{Error, Instant, Switch, Value, MODEL_NAME};
 use sha2::{Digest, Sha256};
 
 fn t0() -> Instant {
@@ -465,4 +465,351 @@ fn the_empty_fixture_takes_a_registration_under_rust() {
         std::fs::read(dir.path().join("state.json")).unwrap(),
         fixture_bytes("registered.json")
     );
+}
+
+// ----------------------------------------------------------------
+// A small JSON reader for the recorded request documents, in
+// the same form the escalation suite carries. The crate
+// carries no JSON library for its tests.
+// ----------------------------------------------------------------
+
+#[derive(Clone, Debug, PartialEq)]
+enum Json {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(String),
+    Array(Vec<Json>),
+    Object(Vec<(String, Json)>),
+}
+
+impl Json {
+    fn get(&self, key: &str) -> Option<&Json> {
+        match self {
+            Json::Object(pairs) => pairs.iter().find(|(name, _)| name == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Json::Str(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    fn as_array(&self) -> Option<&Vec<Json>> {
+        match self {
+            Json::Array(items) => Some(items),
+            _ => None,
+        }
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        match self {
+            Json::Object(pairs) => pairs.iter().map(|(name, _)| name.as_str()).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+struct Parser<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn parse(text: &'a str) -> Result<Json, String> {
+        let mut parser = Parser {
+            bytes: text.as_bytes(),
+            at: 0,
+        };
+        parser.skip_space();
+        let value = parser.value()?;
+        parser.skip_space();
+        if parser.at != parser.bytes.len() {
+            return Err(format!("trailing bytes at {}", parser.at));
+        }
+        Ok(value)
+    }
+
+    fn skip_space(&mut self) {
+        while self.at < self.bytes.len()
+            && matches!(self.bytes[self.at], b' ' | b'\n' | b'\r' | b'\t')
+        {
+            self.at += 1;
+        }
+    }
+
+    fn peek(&self) -> Result<u8, String> {
+        self.bytes
+            .get(self.at)
+            .copied()
+            .ok_or_else(|| "unexpected end".to_string())
+    }
+
+    fn value(&mut self) -> Result<Json, String> {
+        match self.peek()? {
+            b'{' => {
+                self.at += 1;
+                let mut pairs = Vec::new();
+                self.skip_space();
+                if self.peek()? == b'}' {
+                    self.at += 1;
+                    return Ok(Json::Object(pairs));
+                }
+                loop {
+                    self.skip_space();
+                    let key = match self.value()? {
+                        Json::Str(text) => text,
+                        _ => return Err("object key is not a string".to_string()),
+                    };
+                    self.skip_space();
+                    if self.peek()? != b':' {
+                        return Err("object pair without a colon".to_string());
+                    }
+                    self.at += 1;
+                    self.skip_space();
+                    let value = self.value()?;
+                    pairs.push((key, value));
+                    self.skip_space();
+                    match self.peek()? {
+                        b',' => self.at += 1,
+                        b'}' => {
+                            self.at += 1;
+                            return Ok(Json::Object(pairs));
+                        }
+                        _ => return Err("object pair without a comma".to_string()),
+                    }
+                }
+            }
+            b'[' => {
+                self.at += 1;
+                let mut items = Vec::new();
+                self.skip_space();
+                if self.peek()? == b']' {
+                    self.at += 1;
+                    return Ok(Json::Array(items));
+                }
+                loop {
+                    self.skip_space();
+                    items.push(self.value()?);
+                    self.skip_space();
+                    match self.peek()? {
+                        b',' => self.at += 1,
+                        b']' => {
+                            self.at += 1;
+                            return Ok(Json::Array(items));
+                        }
+                        _ => return Err("array item without a comma".to_string()),
+                    }
+                }
+            }
+            b'"' => Ok(Json::Str(self.string()?)),
+            b't' => self.literal("true", Json::Bool(true)),
+            b'f' => self.literal("false", Json::Bool(false)),
+            b'n' => self.literal("null", Json::Null),
+            _ => self.number(),
+        }
+    }
+
+    fn literal(&mut self, word: &str, value: Json) -> Result<Json, String> {
+        if self.bytes[self.at..].starts_with(word.as_bytes()) {
+            self.at += word.len();
+            Ok(value)
+        } else {
+            Err(format!("bad literal at {}", self.at))
+        }
+    }
+
+    fn string(&mut self) -> Result<String, String> {
+        if self.peek()? != b'"' {
+            return Err("string does not open".to_string());
+        }
+        self.at += 1;
+        let mut out = String::new();
+        loop {
+            let byte = self.peek()?;
+            self.at += 1;
+            match byte {
+                b'"' => return Ok(out),
+                b'\\' => {
+                    let escape = self.peek()?;
+                    self.at += 1;
+                    match escape {
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\u{0008}'),
+                        b'f' => out.push('\u{000C}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => {
+                            let hex = self
+                                .bytes
+                                .get(self.at..self.at + 4)
+                                .ok_or("short unicode escape")?;
+                            let text =
+                                std::str::from_utf8(hex).map_err(|_| "bad unicode escape")?;
+                            let code =
+                                u32::from_str_radix(text, 16).map_err(|_| "bad unicode escape")?;
+                            self.at += 4;
+                            out.push(char::from_u32(code).ok_or("bad unicode code")?);
+                        }
+                        _ => return Err("bad escape".to_string()),
+                    }
+                }
+                _ => {
+                    let start = self.at - 1;
+                    let width = if byte < 0x80 {
+                        1
+                    } else if byte >= 0xF0 {
+                        4
+                    } else if byte >= 0xE0 {
+                        3
+                    } else {
+                        2
+                    };
+                    let end = start + width;
+                    let chunk = self.bytes.get(start..end).ok_or("short utf8")?;
+                    out.push_str(std::str::from_utf8(chunk).map_err(|_| "bad utf8")?);
+                    self.at = end;
+                }
+            }
+        }
+    }
+
+    fn number(&mut self) -> Result<Json, String> {
+        let start = self.at;
+        while self.at < self.bytes.len()
+            && matches!(
+                self.bytes[self.at],
+                b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E'
+            )
+        {
+            self.at += 1;
+        }
+        let text = std::str::from_utf8(&self.bytes[start..self.at]).map_err(|_| "bad number")?;
+        if text.contains('.') || text.contains('e') || text.contains('E') {
+            text.parse::<f64>()
+                .map(Json::Float)
+                .map_err(|_| format!("bad float {text}"))
+        } else {
+            text.parse::<i64>()
+                .map(Json::Int)
+                .map_err(|_| format!("bad int {text}"))
+        }
+    }
+}
+
+#[test]
+fn contract_payload_statement_matches_the_recorded_requests() {
+    // DM-21 states the payload document's shape in the
+    // contract, and the 48 recorded request files of the
+    // escalation corpus are byte captures of that document.
+    // This pin reads the statement out of CONTRACT.md and
+    // checks every recorded request against it as a parsed
+    // document, so the stated shape and the recorded shape
+    // cannot drift apart in either direction.
+    let contract_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("CONTRACT.md");
+    let contract = std::fs::read_to_string(&contract_path).expect("the contract stands");
+    let at = contract
+        .find("Obligation DM-21 covers the judge helper invocation layer.")
+        .expect("DM-21 stands in the contract");
+    let statement = &contract[at..];
+    assert!(
+        statement.contains(
+            "exactly the fields model and state and questions, in that construction order"
+        ),
+        "the statement names the payload fields in order"
+    );
+    assert!(
+        statement.contains("in the order hold and escalate and de-escalate"),
+        "the statement names the label order"
+    );
+    assert!(
+        statement.contains("exactly ten strings standing for the values from 0 to 1 in ninths"),
+        "the statement names the level count"
+    );
+    let requests_dir = fixtures_dir().join("escalation").join("requests");
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(&requests_dir)
+        .expect("the requests directory stands")
+        .map(|entry| entry.expect("a request entry reads").path())
+        .filter(|path| path.to_string_lossy().ends_with(".json"))
+        .collect();
+    paths.sort();
+    assert_eq!(paths.len(), 48, "the corpus carries 48 recorded requests");
+    for path in &paths {
+        let text = std::fs::read_to_string(path).expect("a recorded request reads");
+        let document = Parser::parse(&text).expect("a recorded request parses");
+        let name = path.display().to_string();
+        assert_eq!(
+            document.keys(),
+            ["model", "state", "questions"],
+            "{name} carries exactly the stated fields in order"
+        );
+        assert_eq!(
+            document.get("model").and_then(Json::as_str),
+            Some(MODEL_NAME),
+            "{name} names the pinned model the statement names"
+        );
+        assert!(
+            matches!(document.get("state"), Some(Json::Str(text)) if !text.is_empty()),
+            "{name} carries the vignette as its state text"
+        );
+        let questions = document
+            .get("questions")
+            .and_then(Json::as_array)
+            .expect("the questions stand as an array");
+        assert_eq!(questions.len(), 2, "{name} carries exactly two questions");
+        let choice = &questions[0];
+        assert_eq!(
+            choice.keys(),
+            ["kind", "labels"],
+            "{name} choice question carries exactly its stated fields"
+        );
+        assert_eq!(choice.get("kind").and_then(Json::as_str), Some("choice"));
+        let labels = choice
+            .get("labels")
+            .and_then(Json::as_array)
+            .expect("the labels stand as an array");
+        assert_eq!(labels.len(), 3, "{name} carries exactly three labels");
+        for (index, expected) in ["hold", "escalate", "de-escalate"].iter().enumerate() {
+            let label = &labels[index];
+            assert_eq!(
+                label.keys(),
+                ["label", "criterion"],
+                "{name} label {index} carries exactly its stated fields"
+            );
+            assert_eq!(
+                label.get("label").and_then(Json::as_str),
+                Some(*expected),
+                "{name} label {index} stands in the stated order"
+            );
+            assert!(
+                matches!(label.get("criterion"), Some(Json::Str(text)) if !text.is_empty()),
+                "{name} label {index} carries a nonempty criterion"
+            );
+        }
+        let score = &questions[1];
+        assert_eq!(
+            score.keys(),
+            ["kind", "levels"],
+            "{name} score question carries exactly its stated fields"
+        );
+        assert_eq!(score.get("kind").and_then(Json::as_str), Some("score"));
+        let levels = score
+            .get("levels")
+            .and_then(Json::as_array)
+            .expect("the levels stand as an array");
+        assert_eq!(levels.len(), 10, "{name} carries exactly ten levels");
+        for (index, level) in levels.iter().enumerate() {
+            assert!(
+                matches!(level, Json::Str(text) if !text.is_empty()),
+                "{name} level {index} stands as a nonempty string"
+            );
+        }
+    }
 }
