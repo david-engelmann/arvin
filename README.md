@@ -224,7 +224,7 @@ The model seat stands landed in the library on the terms above and stands carrie
 
 What is not built. Arvin has no daemon and no watcher, so a stage moves only when a host calls an evaluation. It has no network service, and its state is one file on one machine for callers sharing the filesystem.
 
-Closed perfection rounds are 47 of 100. A round counts only when a full cycle of work and audit and review and red team and approval has closed, and seeding and setup are not rounds.
+Closed perfection rounds are 48 of 100. A round counts only when a full cycle of work and audit and review and red team and approval has closed, and seeding and setup are not rounds.
 
 The contract lives in CONTRACT.md, where obligations DM-1 to DM-23 state the stage semantics, the limits, and the behaviour of the model seat and its records, and ROADMAP.md records the decision model doctrine the seat implements.
 
