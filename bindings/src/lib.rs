@@ -44,7 +44,7 @@ use std::time::Duration;
 use pyo3::create_exception;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyTuple};
 
 use arvin_core::{
     Consultation, Error, FixtureTransport, Instant, Record, StageReport, SubprocessTransport,
@@ -485,6 +485,37 @@ fn fixture_refusal(message: String) -> PyErr {
     to_py_error(Error::InvalidRequest(message))
 }
 
+/// Convert the judge_args argument of stage_with_model into
+/// the argument vector the subprocess transport carries. The
+/// argument stands documented as a list or tuple of strings,
+/// and it is converted element by element here, in the
+/// surface's own refusal discipline, so a value that is no
+/// list or tuple and an element that is no string each refuse
+/// as an invalid request in the library voice. A plain
+/// extraction would raise the binding framework's own error
+/// in the framework's wording instead, the one caller error
+/// of the model surface that escaped the discipline every
+/// neighbouring conversion crosses in.
+fn judge_arguments(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    let items: Vec<Bound<'_, PyAny>> = if let Ok(list) = value.cast::<PyList>() {
+        list.iter().collect()
+    } else if let Ok(tuple) = value.cast::<PyTuple>() {
+        tuple.iter().collect()
+    } else {
+        return Err(fixture_refusal(
+            "the judge arguments stand as no list or tuple".to_string(),
+        ));
+    };
+    let mut arguments = Vec::new();
+    for item in items {
+        let argument: String = item
+            .extract()
+            .map_err(|_| fixture_refusal("a judge argument stands as no string".to_string()))?;
+        arguments.push(argument);
+    }
+    Ok(arguments)
+}
+
 /// Translate a fixture dictionary into the one consultation
 /// it scripts. The dictionary stands in one of the two forms
 /// of DM-20, the verdict form carrying a model name, a
@@ -754,7 +785,7 @@ fn stage_with_model(
         None => None,
     };
     let arguments: Vec<String> = match judge_args {
-        Some(value) => value.extract()?,
+        Some(value) => judge_arguments(value)?,
         None => Vec::new(),
     };
     let now = instant_argument(now)?;
