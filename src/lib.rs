@@ -3127,13 +3127,8 @@ fn warrant(run: &Run, now: &Instant) -> Result<(usize, Vec<&'static str>)> {
     let missed = missed_proofs(run, now)?;
     if missed >= 1 {
         reasons.push("missed proofs");
-        if missed >= run.missed_proof_limit as i128 {
-            index = index.max(stage_index("kill"));
-        } else {
-            let warranted = MISSED_COUNT_STAGES[(missed.min(4) - 1) as usize];
-            index = index.max(stage_index(warranted));
-        }
     }
+    index = index.max(missed_warrant_index(missed, run.missed_proof_limit));
     Ok((index, reasons))
 }
 
