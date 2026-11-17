@@ -2396,6 +2396,109 @@ fn cli_addresses_a_state_path_that_is_not_utf8() {
     let document = std::fs::read_to_string(&state).unwrap();
     assert!(document.contains("\"format\": \"deadman-state/1\""));
 }
+#[test]
+fn cli_refuses_an_argument_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStringExt;
+    // DM-A13: every argument but the state path is read as
+    // text. An argument that is not valid UTF-8 refuses at the
+    // parser's boundary, naming its position, where the lossy
+    // carriage once rewrote it with replacement characters and
+    // let the rewritten value stand in a refusal message, a
+    // proof note, or a judge path.
+    let dir = TestDir::new("non-utf8-argument");
+    let state = state_path(&dir);
+    let bad_name = std::ffi::OsString::from_vec(b"run-\xff".to_vec());
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .arg("--state")
+        .arg(&state)
+        .arg("register")
+        .arg(&bad_name)
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("argument 4 is not valid UTF-8 text"),
+        "{stderr}"
+    );
+    assert!(!state.exists());
+    // A proof note carrying undecodable bytes refuses the
+    // same way, at its own position, and the proof the lossy
+    // carriage once recorded stands unrecorded.
+    let state_arg = state.to_string_lossy().into_owned();
+    run_cli(&["--state", &state_arg, "register", "run-a"], 0);
+    let before = state_bytes(&dir);
+    let bad_note = std::ffi::OsString::from_vec(b"note-\xff".to_vec());
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .arg("--state")
+        .arg(&state)
+        .args(["prove", "run-a", "--note"])
+        .arg(&bad_note)
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("argument 6 is not valid UTF-8 text"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before);
+}
+
+#[test]
+fn cli_refuses_a_judge_fixture_path_that_is_not_utf8() {
+    use std::os::unix::ffi::OsStringExt;
+    // A judge fixture path that is not valid UTF-8 once
+    // travelled lossy into the fixture read and failed as a
+    // command failure naming a file the caller never named.
+    // It now refuses at the boundary, as an argument error at
+    // exit 2, before any state stands touched.
+    let dir = TestDir::new("non-utf8-judge-fixture");
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    run_cli(&["--state", &state, "register", "run-a"], 0);
+    let before = state_bytes(&dir);
+    let bad_path = std::ffi::OsString::from_vec(b"reply-\xff.json".to_vec());
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .arg("--state")
+        .arg(&state)
+        .args(["stage", "run-a", "--judge-fixture"])
+        .arg(&bad_path)
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("argument 6 is not valid UTF-8 text"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before);
+}
+
+#[test]
+fn cli_addresses_a_state_path_that_is_not_utf8_inline() {
+    use std::os::unix::ffi::OsStringExt;
+    // The state path exemption stands in its inline form as
+    // in its separate form: the path is carried as the raw
+    // bytes after the first equals sign. A blanket UTF-8
+    // refusal that forgot the exemption fails this pin, as it
+    // fails the separate form pin above.
+    let dir = TestDir::new("non-utf8-state-inline");
+    let raw_name = std::ffi::OsString::from_vec(b"state-\xff.json".to_vec());
+    let state = dir.path().join(&raw_name);
+    let mut inline = std::ffi::OsString::from("--state=");
+    inline.push(&state);
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .arg(&inline)
+        .args(["register", "run-a"])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        "registered run-a\n"
+    );
+    assert!(state.exists());
+}
 
 // ----------------------------------------------------------------
 // The escalation slice pins of Round 3, obligations DM-13 to
