@@ -1007,6 +1007,23 @@ fn a_proof_interval_at_the_representable_bound_registers() {
 }
 
 #[test]
+fn missed_counts_stay_exact_at_a_wide_interval() {
+    let dir = TestDir::new("missed-wide-interval");
+    let switch = make_switch(&dir);
+    register_full(&switch, "run-a", &t0(), 100_000_000_000, 5, None, None);
+    // Exactly at the first deadline nothing stands missed, at
+    // this width as at any other.
+    let report = switch.stage(&text("run-a"), &at(100_000_000_000)).unwrap();
+    assert_eq!(report.stage, "none");
+    assert!(report.reasons.is_empty());
+    // Two whole intervals and a half past the base instant
+    // stand as two missed proofs, warranting throttle.
+    let report = switch.stage(&text("run-a"), &at(250_000_000_000)).unwrap();
+    assert_eq!(report.stage, "throttle");
+    assert_eq!(report.reasons, ["missed proofs"]);
+}
+
+#[test]
 fn a_proof_interval_past_the_representable_bound_is_refused() {
     let dir = TestDir::new("interval-past-bound");
     let switch = make_switch(&dir);
