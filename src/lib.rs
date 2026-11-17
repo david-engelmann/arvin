@@ -1812,7 +1812,7 @@ fn empty_document() -> Document {
 // first match lookup over the pairs reads the one value the
 // map would have carried, and a shape check over the pairs
 // counts the same keys the map counted.
-fn object_pairs<'a>(value: &'a Value) -> Option<&'a [(String, Value)]> {
+fn object_pairs(value: &Value) -> Option<&[(String, Value)]> {
     match value {
         Value::Object(pairs) => Some(pairs),
         _ => None,
