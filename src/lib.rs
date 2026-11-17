@@ -2854,12 +2854,12 @@ fn json_int_value(number: &JsonInt) -> Value {
 
 fn dump_document(document: &Document, out: &mut String) {
     out.push_str("{\n");
-    out.push_str(&"  ".repeat(1));
+    out.push_str("  ");
     dump_json_string("format", out);
     out.push_str(": ");
     dump_json_string(FORMAT_NAME, out);
     out.push_str(",\n");
-    out.push_str(&"  ".repeat(1));
+    out.push_str("  ");
     dump_json_string("runs", out);
     out.push_str(": ");
     if document.runs.is_empty() {
@@ -2874,7 +2874,7 @@ fn dump_document(document: &Document, out: &mut String) {
             }
             out.push('\n');
         }
-        out.push_str(&"  ".repeat(1));
+        out.push_str("  ");
         out.push(']');
     }
     out.push('\n');
