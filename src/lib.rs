@@ -4032,9 +4032,10 @@ impl Switch {
             Err(err) => return Err(corrupt(format!("the state file cannot be read, {err}"))),
         };
         let value = parse_document(&raw).map_err(|failure| match failure {
-            ParseFailure::DuplicateKey(key) => {
-                corrupt(format!("a key stands twice in the document, {key}"))
-            }
+            ParseFailure::DuplicateKey(key) => corrupt(format!(
+                "a key stands twice in the document, {}",
+                py_repr_str(&key)
+            )),
             ParseFailure::Syntax(detail) => {
                 corrupt(format!("the document does not parse, {detail}"))
             }

@@ -1536,6 +1536,39 @@ fn damage_battery_text_shapes() {
     let third = TestDir::new("damage-text-not-json");
     assert_corrupt_document(&third, b"this is not json");
 }
+#[test]
+fn cli_renders_a_duplicated_key_in_its_escaped_form() {
+    // DM-A22: the duplicated key message was the one error
+    // message in the library that rendered document text
+    // raw. A key the document's escapes decode to a newline
+    // put a second line into the error output, against the
+    // one line discipline; the message now renders the key
+    // through the repr, as every sibling message renders its
+    // values.
+    let dir = TestDir::new("duplicate-key-message");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    std::fs::write(
+        &state,
+        r#"{"format": "deadman-state/1", "a\nb": 1, "a\nb": 2, "runs": []}"#,
+    )
+    .unwrap();
+    let (_, stderr) = run_cli(&["--state", &state_arg, "log", "run-a"], 1);
+    assert_eq!(
+        stderr,
+        "error: the state is corrupt, a key stands twice in the document, 'a\\nb'\n"
+    );
+    std::fs::write(
+        &state,
+        r#"{"format": "deadman-state/1", "format": "deadman-state/1", "runs": []}"#,
+    )
+    .unwrap();
+    let (_, stderr) = run_cli(&["--state", &state_arg, "log", "run-a"], 1);
+    assert_eq!(
+        stderr,
+        "error: the state is corrupt, a key stands twice in the document, 'format'\n"
+    );
+}
 
 /// Replace the reasons array at the given index among the
 /// reasons arrays of a document, counting from 0.
