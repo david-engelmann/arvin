@@ -45,4 +45,4 @@ jobs:
           . .venv-binding/bin/activate
           python -m pip install maturin==1.16.0 pytest==9.2.0
           maturin develop --manifest-path bindings/Cargo.toml
-          python -m pytest tests/test_binding_smoke.py
+          python -m pytest tests/test_binding_smoke.py tests/test_binding_replay.py
