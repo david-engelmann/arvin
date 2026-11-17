@@ -216,19 +216,47 @@ fn ci_carries_the_fleet_credential_hygiene() {
         .lines()
         .any(|line| line.trim() == "persist-credentials: false"));
     assert!(!text.contains("rust-toolchain@master"));
-    let toolchain_line = text
-        .lines()
-        .find(|line| line.contains("dtolnay/rust-toolchain@"))
-        .expect("the workflow carries no toolchain step");
-    let pin = toolchain_line
-        .split("dtolnay/rust-toolchain@")
-        .nth(1)
-        .unwrap()
-        .trim();
-    assert_eq!(pin.len(), 40, "{}", toolchain_line);
-    assert!(pin
-        .bytes()
-        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    assert!(toolchain_pins_all_full(&text));
+}
+
+/// Whether every toolchain step in a workflow text stands
+/// pinned to a full commit SHA, and at least one stands in
+/// the text at all. The workflow carries the toolchain step
+/// once per job, so the judgement runs over every line that
+/// names the action, not the first alone.
+fn toolchain_pins_all_full(text: &str) -> bool {
+    let mut seen = false;
+    for line in text.lines() {
+        if let Some((_, pin)) = line.split_once("dtolnay/rust-toolchain@") {
+            seen = true;
+            let pin = pin.trim();
+            if pin.len() != 40
+                || !pin
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return false;
+            }
+        }
+    }
+    seen
+}
+
+#[test]
+fn ci_toolchain_pin_judges_every_toolchain_line() {
+    let ci_text = read(".github/workflows/ci.yml");
+    assert!(toolchain_pins_all_full(&ci_text));
+    // A second toolchain step repinned to a branch name or a
+    // short digest passes the first line judgement this pin
+    // replaces, so the every line judgement must refuse both
+    // texts, and a text carrying no toolchain step at all.
+    let pinned = "      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8\n";
+    let branch = "      - uses: dtolnay/rust-toolchain@master\n";
+    let short = "      - uses: dtolnay/rust-toolchain@683b588\n";
+    assert!(toolchain_pins_all_full(&format!("{pinned}{pinned}")));
+    assert!(!toolchain_pins_all_full(&format!("{pinned}{branch}")));
+    assert!(!toolchain_pins_all_full(&format!("{pinned}{short}")));
+    assert!(!toolchain_pins_all_full("name: CI\n"));
 }
 
 #[test]

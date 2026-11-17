@@ -297,6 +297,7 @@ fn register_dict(
         seq: 1,
         kind: "registered".to_string(),
         at: registered_at.clone(),
+        instant: *now,
         stage: "none".to_string(),
         reasons: Vec::new(),
         model_name: None,
