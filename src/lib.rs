@@ -2062,16 +2062,15 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
     })
 }
 
-/// Whole proof intervals missed at an instant, counted under
-/// DM-3 from a base instant, deadline exact counts zero. The
-/// count is exact at every width the reader admits, because an
-/// interval wider than every span the recorded years hold
-/// misses nothing at any recorded instant.
-fn missed_count_between(base: &Instant, at: &Instant, interval: &JsonInt) -> i128 {
-    let interval_seconds = match interval {
-        JsonInt::Small(value) => *value,
-        JsonInt::Big(_) => return 0,
-    };
+/// Whole proof intervals missed between two instants at a
+/// whole second interval, counted under DM-3, deadline exact
+/// counts zero. The count is exact at every width the reader
+/// admits, because an interval wider than every span the
+/// recorded years hold misses nothing at any recorded instant.
+/// This is the one home of the DM-3 missed proof arithmetic:
+/// the history join and the evaluation both count through it,
+/// so the two readers of the rule cannot drift apart.
+fn missed_count(base: &Instant, at: &Instant, interval_seconds: i128) -> i128 {
     if interval_seconds >= 400_000_000_000 {
         return 0;
     }
@@ -2081,6 +2080,18 @@ fn missed_count_between(base: &Instant, at: &Instant, interval: &JsonInt) -> i12
         0
     } else {
         (delta_micros - 1) / interval_micros
+    }
+}
+
+/// Whole proof intervals missed at an instant, counted under
+/// DM-3 from a base instant, for the history join, whose
+/// interval stands as the reader read it. An interval too wide
+/// to stand as a whole second count misses nothing, the same
+/// answer the count itself gives at that width.
+fn missed_count_between(base: &Instant, at: &Instant, interval: &JsonInt) -> i128 {
+    match interval {
+        JsonInt::Small(value) => missed_count(base, at, *value),
+        JsonInt::Big(_) => 0,
     }
 }
 
@@ -3093,13 +3104,7 @@ fn missed_proofs(run: &Run, now: &Instant) -> Result<i128> {
         JsonInt::Small(value) => *value,
         JsonInt::Big(_) => unreachable!("the bound check above refuses a big interval"),
     };
-    let interval_micros = interval_seconds * 1_000_000;
-    let delta_micros = now.epoch_micros() - base.epoch_micros();
-    if delta_micros <= interval_micros {
-        Ok(0)
-    } else {
-        Ok((delta_micros - 1) / interval_micros)
-    }
+    Ok(missed_count(&base, now, interval_seconds))
 }
 
 /// The warranted stage index and the live trigger names at the
