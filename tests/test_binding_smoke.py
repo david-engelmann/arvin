@@ -866,6 +866,73 @@ def test_stage_with_model_fixture_values_of_the_wrong_type_refuse(
         assert len(arvin.log(state, "run-a")) == 2
 
 
+def test_stage_with_model_judge_args_of_the_wrong_shape_refuse(
+    tmp_path,
+):
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as element:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge="a-helper",
+            judge_args=["--flag", 5],
+        )
+    assert str(element.value) == "a judge argument stands as no string"
+    assert len(arvin.log(state, "run-a")) == 2
+
+    with pytest.raises(arvin.InvalidRequestError) as bare:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge="a-helper",
+            judge_args="--flag",
+        )
+    assert str(bare.value) == (
+        "the judge arguments stand as no list or tuple"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+
+def test_stage_with_model_judge_args_tuple_reaches_the_helper(
+    tmp_path,
+):
+    # A tuple of strings stands as the documented second
+    # shape of the argument, and its elements reach the
+    # helper in order, ahead of the payload flag the
+    # transport appends.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+    marker = tmp_path / "args.txt"
+    helper = tmp_path / "judge.sh"
+    helper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s %s' \"$1\" \"$2\" > \"{marker}\"\n"
+        "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
+        "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
+        "{\"level\": 5}}'\n"
+    )
+    helper.chmod(0o755)
+    report = arvin.stage_with_model(
+        state,
+        "run-a",
+        T_WARN,
+        judge=str(helper),
+        judge_args=("--first", "--second"),
+    )
+    assert report == {
+        "run": "run-a",
+        "stage": "warn",
+        "reasons": ["missed proofs"],
+    }
+    assert marker.read_text() == "--first --second"
+    last = arvin.log(state, "run-a")[-1]
+    assert last["model_verdict"] == "hold"
+
+
 def test_binding_log_records_carry_the_ancestry_field(tmp_path):
     # The certifying sequence of DM-23 driven through the
     # binding alone. The run rises to throttle on missed
