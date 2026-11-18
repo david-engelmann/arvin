@@ -16,6 +16,7 @@
 //! whitespace families of the Python int grammar, probed against
 //! the Python runtime before the port was written.
 
+use std::io::Write;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -145,9 +146,37 @@ fn parser_error(usage: &'static str, prog: &str, message: String) -> ParserError
     }
 }
 
+/// Write one line to stderr, fallibly (DM-A24). The result
+/// is ignored on purpose: the reporters of failure must not
+/// themselves panic when stderr also fails, and the exit
+/// code carries the failure either way.
+fn eprint_line(text: &str) {
+    let stderr = std::io::stderr();
+    let mut lock = stderr.lock();
+    let _ = writeln!(lock, "{text}");
+}
+
+/// Write one line of command output to stdout, checked
+/// (DM-A24). A failed write, a broken pipe or a full device,
+/// answers the output error line on stderr and exits 1,
+/// where the panicking print macros answered with a panic
+/// report at exit 101, against this module's doctrine that
+/// no traceback is ever printed. Where the command was a
+/// mutation, the mutation has already published when its
+/// print fails; the failure stands in the reporting, and
+/// the message names the output, not the command.
+fn print_line(text: &str) {
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    if writeln!(lock, "{text}").is_err() || lock.flush().is_err() {
+        eprint_line("error: the command's output could not be written");
+        std::process::exit(1);
+    }
+}
+
 fn parser_fail(usage: &str, prog: &str, message: &str) -> ExitCode {
-    eprintln!("{usage}");
-    eprintln!("{prog}: error: {message}");
+    eprint_line(usage);
+    eprint_line(&format!("{prog}: error: {message}"));
     ExitCode::from(2)
 }
 
@@ -407,7 +436,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                 || token == "--help"
                 || (token.starts_with("-h") && !token.starts_with("--")))
         {
-            println!("{}", sub_help(command));
+            print_line(sub_help(command));
             std::process::exit(0);
         }
         if !after_separator && token.starts_with("--") && token.len() > 2 {
@@ -427,7 +456,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                             ),
                         ));
                     }
-                    println!("{}", sub_help(command));
+                    print_line(sub_help(command));
                     std::process::exit(0);
                 }
                 Ok(Some(option)) => {
@@ -568,7 +597,7 @@ fn require(command: &str, args: &SubArgs) -> Result<(), ParserError> {
 }
 
 fn report_error(error: &Error) -> ExitCode {
-    eprintln!("error: {}", error.message());
+    eprint_line(&format!("error: {}", error.message()));
     ExitCode::from(error.exit_code())
 }
 
@@ -677,7 +706,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
             || token == "--help"
             || (token.starts_with("-h") && !token.starts_with("--"))
         {
-            println!("{MAIN_HELP}");
+            print_line(MAIN_HELP);
             return Ok(ExitCode::from(0));
         }
         if token.starts_with("--") && token.len() > 2 {
@@ -697,7 +726,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                             ),
                         ));
                     }
-                    println!("{MAIN_HELP}");
+                    print_line(MAIN_HELP);
                     return Ok(ExitCode::from(0));
                 }
                 Ok(Some("--state")) => {
@@ -819,21 +848,21 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                 &soft_ceiling,
                 &hard_ceiling,
             )?;
-            println!("registered {run}");
+            print_line(&format!("registered {run}"));
         }
         "prove" => {
             let note = option_text(&args, "--note").unwrap_or("").to_string();
             switch.prove(&run_value, &Value::Str(note), &now)?;
-            println!("proved {run}");
+            print_line(&format!("proved {run}"));
         }
         "spend" => {
             let amount = option_int(&args, "--amount").unwrap().clone();
             let total = switch.spend(&run_value, &amount, &now)?;
-            println!("spend_total {total}");
+            print_line(&format!("spend_total {total}"));
         }
         "pull" => {
             let stage = switch.pull(&run_value, &now)?;
-            println!("stage {stage}");
+            print_line(&format!("stage {stage}"));
         }
         "stage" => {
             stage_command(&switch, &run_value, &now, &args)?;
@@ -847,7 +876,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                 for reason in &record.reasons {
                     line.push_str(&format!(" reason={reason}"));
                 }
-                println!("{line}");
+                print_line(&line);
             }
         }
     }
@@ -929,13 +958,13 @@ fn stage_command(
         .ok()
         .and_then(|records| records.last().map(|record| record.seq));
     let report = switch.stage_with_model(run_value, now, transport, host_context)?;
-    println!("stage {}", report.stage);
+    print_line(&format!("stage {}", report.stage));
     for reason in &report.reasons {
-        println!("reason {reason}");
+        print_line(&format!("reason {reason}"));
     }
     if let Some(lines) = consultation_lines(switch, run_value, noted, now) {
         for line in lines {
-            println!("{line}");
+            print_line(&line);
         }
     }
     Ok(())
