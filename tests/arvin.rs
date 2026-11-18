@@ -4972,3 +4972,70 @@ fn contract_states_the_reply_bound_the_transport_enforces() {
         "a verdict body padded inside the stated bound lands its verdict"
     );
 }
+
+/// Run the CLI with stdout redirected to the full device, so
+/// every write the command makes to stdout fails, returning
+/// the exit code and the stderr text. The device is opened
+/// for writing: a read only descriptor's writes are silently
+/// accepted by the standard output layer, so the read only
+/// form would let every command pass and the drive would
+/// prove nothing.
+fn run_cli_stdout_full(args: &[&str]) -> (i32, String) {
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("the full device opens");
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .args(args)
+        .stdout(std::process::Stdio::from(full))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("the binary runs");
+    (
+        output.status.code().expect("the binary exits by code"),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn cli_register_reports_a_failed_output_write() {
+    // DM-A24: the CLI printed through the panicking macros,
+    // so a failed write answered with a panic report at exit
+    // 101, against the module doc's doctrine that no
+    // traceback is ever printed. The checked writer answers
+    // the output error line at exit 1. The mutation itself
+    // has already published when its print fails, which the
+    // closing log read proves.
+    let dir = TestDir::new("print-full-register");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    let (code, stderr) = run_cli_stdout_full(&["--state", &state_arg, "register", "run-a"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
+    let (stdout, _) = run_cli(&["--state", &state_arg, "log", "run-a"], 0);
+    assert!(stdout.contains("registered"), "{stdout}");
+}
+
+#[test]
+fn cli_log_reports_a_failed_output_write() {
+    // DM-A24: the log loop's prints take the same checked
+    // writer, so a failed write mid log answers the same
+    // line at exit 1 rather than a panic.
+    let dir = TestDir::new("print-full-log");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    run_cli(&["--state", &state_arg, "register", "run-a"], 0);
+    let (code, stderr) = run_cli_stdout_full(&["--state", &state_arg, "log", "run-a"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
+}
+
+#[test]
+fn cli_help_reports_a_failed_output_write() {
+    // DM-A24: the help texts print through the same checked
+    // writer, so --help with a dead stdout answers the output
+    // error line at exit 1 rather than panicking.
+    let (code, stderr) = run_cli_stdout_full(&["--help"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
+}
