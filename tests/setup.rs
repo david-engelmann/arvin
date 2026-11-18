@@ -202,6 +202,87 @@ fn ci_runs_the_local_gate_commands() {
     assert!(commands.iter().any(|c| c == CLIPPY_COMMAND));
 }
 
+/// The pytest file arguments the workflow's binding job
+/// names, read from the binding job's own section of the
+/// workflow text, so a judgement about the binding job never
+/// borrows a line from another job. A job section runs from
+/// its two space key to the next two space key.
+fn binding_pytest_files(ci_text: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut in_binding = false;
+    for line in ci_text.lines() {
+        let stripped = line.trim();
+        let job_key = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && stripped.ends_with(':')
+            && !stripped.contains(' ');
+        if job_key {
+            in_binding = stripped == "binding:";
+            continue;
+        }
+        if in_binding && stripped.starts_with("python -m pytest") {
+            files.extend(
+                stripped
+                    .split_whitespace()
+                    .skip(3)
+                    .map(|name| name.to_string()),
+            );
+        }
+    }
+    files
+}
+
+#[test]
+fn ci_binding_job_runs_both_binding_suites() {
+    // DM-A23: DM-A8's repair made the binding job run both
+    // Python suites, and no pin guarded the repair, so the
+    // replay file could drop out of the binding job with
+    // every pin green. This pin reads the binding job's own
+    // section and names both files.
+    let files = binding_pytest_files(&read(".github/workflows/ci.yml"));
+    assert!(
+        files.iter().any(|f| f == "tests/test_binding_smoke.py"),
+        "{files:?}"
+    );
+    assert!(
+        files.iter().any(|f| f == "tests/test_binding_replay.py"),
+        "{files:?}"
+    );
+    // The plausible wrong forms of the regression must fail
+    // the helper: the binding job naming the smoke file
+    // alone, the replay file alone, and a text whose binding
+    // job names the smoke file alone while another job's
+    // pytest line names both, which the helper must not
+    // borrow across the job boundary.
+    let binding_head = "jobs:\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest ";
+    let both = binding_pytest_files(&format!(
+        "{binding_head}tests/test_binding_smoke.py tests/test_binding_replay.py\n"
+    ));
+    assert_eq!(both.len(), 2, "{both:?}");
+    let smoke_only = binding_pytest_files(&format!("{binding_head}tests/test_binding_smoke.py\n"));
+    assert!(
+        !smoke_only
+            .iter()
+            .any(|f| f == "tests/test_binding_replay.py"),
+        "{smoke_only:?}"
+    );
+    let replay_only =
+        binding_pytest_files(&format!("{binding_head}tests/test_binding_replay.py\n"));
+    assert!(
+        !replay_only
+            .iter()
+            .any(|f| f == "tests/test_binding_smoke.py"),
+        "{replay_only:?}"
+    );
+    let borrowed = binding_pytest_files(
+        "jobs:\n  test:\n    steps:\n      - run: python -m pytest tests/test_binding_smoke.py tests/test_binding_replay.py\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest tests/test_binding_smoke.py\n",
+    );
+    assert!(
+        !borrowed.iter().any(|f| f == "tests/test_binding_replay.py"),
+        "{borrowed:?}"
+    );
+}
+
 #[test]
 fn ci_carries_the_fleet_credential_hygiene() {
     let text = read(".github/workflows/ci.yml");
