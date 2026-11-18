@@ -584,7 +584,75 @@ fn run() -> ExitCode {
     }
 }
 
+/// The state path is the one argument carried as raw bytes,
+/// because it names a file, as the state option's seat in
+/// dispatch records. Every other argument is read as text,
+/// and an argument that is not valid UTF-8 text is refused
+/// rather than rewritten with replacement characters on its
+/// way into a run id, a proof note, a host context, or a
+/// judge path, the lossy carriage DM-A13 recorded. The scan
+/// walks the raw arguments as dispatch's own state scan
+/// consumes them and exempts exactly the state value, in its
+/// inline form after the first equals sign and in its
+/// following token form. The refusal names the argument by
+/// its position, the only name an undecodable argument has.
+fn first_undecodable_argument(os_argv: &[std::ffi::OsString]) -> Option<usize> {
+    let mut exempt: Vec<bool> = vec![false; os_argv.len()];
+    let mut index = 0;
+    while index < os_argv.len() {
+        let token = os_argv[index].to_string_lossy();
+        if token == "--" {
+            break;
+        }
+        if token == "-h"
+            || token == "--help"
+            || (token.starts_with("-h") && !token.starts_with("--"))
+        {
+            break;
+        }
+        if token.starts_with("--") && token.len() > 2 {
+            let (name, inline_value) = match token.find('=') {
+                Some(pos) => (&token[..pos], true),
+                None => (&token[..], false),
+            };
+            match resolve_long(name, &["--help", "--state"]) {
+                Ok(Some("--state")) => {
+                    if inline_value {
+                        exempt[index] = true;
+                        index += 1;
+                    } else if index + 1 < os_argv.len()
+                        && !is_option_like(&os_argv[index + 1].to_string_lossy())
+                    {
+                        exempt[index] = true;
+                        exempt[index + 1] = true;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+                Ok(Some(_)) => break,
+                Ok(None) => index += 1,
+                Err(_) => break,
+            }
+            continue;
+        }
+        if is_option_like(&token) {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+    (0..os_argv.len()).find(|&i| !exempt[i] && os_argv[i].to_str().is_none())
+}
+
 fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode, Error> {
+    if let Some(index) = first_undecodable_argument(os_argv) {
+        return Ok(parser_fail(
+            MAIN_USAGE,
+            "arvin",
+            &format!("argument {} is not valid UTF-8 text", index + 1),
+        ));
+    }
     // Parse the top level: the state option and the subcommand
     // word, with the remaining tokens handed to the subcommand.
     // A double dash standing where the subcommand word is
