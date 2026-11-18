@@ -274,9 +274,9 @@ fn ci_binding_job_runs_both_binding_suites() {
             .any(|f| f == "tests/test_binding_smoke.py"),
         "{replay_only:?}"
     );
-    let borrowed = binding_pytest_files(&format!(
-        "jobs:\n  test:\n    steps:\n      - run: python -m pytest tests/test_binding_smoke.py tests/test_binding_replay.py\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest tests/test_binding_smoke.py\n"
-    ));
+    let borrowed = binding_pytest_files(
+        "jobs:\n  test:\n    steps:\n      - run: python -m pytest tests/test_binding_smoke.py tests/test_binding_replay.py\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest tests/test_binding_smoke.py\n",
+    );
     assert!(
         !borrowed.iter().any(|f| f == "tests/test_binding_replay.py"),
         "{borrowed:?}"
