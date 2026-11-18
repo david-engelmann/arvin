@@ -1374,11 +1374,14 @@ fn parse_date(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
     Some((days_from_civil(year, month, day), pos))
 }
 
-fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
-    let sign: i64 = if bytes[start] == b'-' { -1 } else { 1 };
-    let mut pos = start + 1;
-    let (hours, next) = digit2(bytes, pos)?;
-    pos = next;
+/// The clock tail the two instant grammars share, the fraction
+/// and the colon separated and the bare digit minute and second
+/// forms that may follow the hours of a time or of an offset,
+/// stated once here (DM-A18). Each caller reads its own grammar
+/// around the tail and bounds what the tail returns in its own
+/// way. The tail returns the minutes and the seconds and the
+/// micros it read and the position it reached.
+fn parse_clock_tail(bytes: &[u8], mut pos: usize) -> Option<(u32, u32, u32, usize)> {
     let mut minutes = 0u32;
     let mut seconds = 0u32;
     let mut micros = 0u32;
@@ -1425,6 +1428,15 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
             }
         }
     }
+    Some((minutes, seconds, micros, pos))
+}
+
+fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
+    let sign: i64 = if bytes[start] == b'-' { -1 } else { 1 };
+    let mut pos = start + 1;
+    let (hours, next) = digit2(bytes, pos)?;
+    pos = next;
+    let (minutes, seconds, mut micros, pos) = parse_clock_tail(bytes, pos)?;
     let whole = hours * 3600 + minutes * 60 + seconds;
     if whole >= 86_400 {
         return None;
@@ -1444,7 +1456,7 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
 pub fn parse_instant(text: &str) -> Option<Instant> {
     let bytes = text.as_bytes();
     let (days, mut pos) = parse_date(bytes, 0)?;
-    let (mut secs, mut micros) = (0u32, 0u32);
+    let (mut secs, micros) = (0u32, 0u32);
     let mut offset_micros: Option<i64> = None;
     if pos == bytes.len() {
         return Some(Instant {
@@ -1462,51 +1474,7 @@ pub fn parse_instant(text: &str) -> Option<Instant> {
     pos += text[pos..].chars().next()?.len_utf8();
     let (hours, next) = digit2(bytes, pos)?;
     pos = next;
-    let mut minutes = 0u32;
-    let mut seconds = 0u32;
-    if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-        let (parsed, next) = parse_fraction(bytes, pos)?;
-        micros = parsed;
-        pos = next;
-    } else if pos < bytes.len() && bytes[pos] == b':' {
-        pos += 1;
-        let (parsed, next) = digit2(bytes, pos)?;
-        minutes = parsed;
-        pos = next;
-        if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
-            micros = parsed;
-            pos = next;
-        } else if pos < bytes.len() && bytes[pos] == b':' {
-            pos += 1;
-            let (parsed, next) = digit2(bytes, pos)?;
-            seconds = parsed;
-            pos = next;
-            if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
-                micros = parsed;
-                pos = next;
-            }
-        }
-    } else if pos < bytes.len() && bytes[pos].is_ascii_digit() {
-        let (parsed, next) = digit2(bytes, pos)?;
-        minutes = parsed;
-        pos = next;
-        if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
-            micros = parsed;
-            pos = next;
-        } else if pos < bytes.len() && bytes[pos].is_ascii_digit() {
-            let (parsed, next) = digit2(bytes, pos)?;
-            seconds = parsed;
-            pos = next;
-            if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
-                micros = parsed;
-                pos = next;
-            }
-        }
-    }
+    let (minutes, seconds, micros, mut pos) = parse_clock_tail(bytes, pos)?;
     if hours > 23 || minutes > 59 || seconds > 59 {
         return None;
     }
