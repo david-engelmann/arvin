@@ -1109,6 +1109,50 @@ fn from_civil_accepts_parts_at_the_valid_bounds() {
 }
 
 #[test]
+fn from_epoch_micros_builds_the_instant_the_count_names() {
+    // The base instant stands 22,403 days and 12 hours past the
+    // epoch, which is 1,935,662,400,000,000 microseconds.
+    let base = Instant::from_epoch_micros(1_935_662_400_000_000, Some(0));
+    assert_eq!(format_instant(&base).unwrap(), "2031-05-04T12:00:00+00:00");
+    // The offset names the spelling a reading was taken in, not
+    // a shift of the instant: the same count read against a two
+    // hour offset is the same instant, and the count two hours
+    // later is the one that renders two hours on.
+    let shifted = Instant::from_epoch_micros(1_935_662_400_000_000, Some(7_200_000_000));
+    assert_eq!(shifted, base);
+    let later = Instant::from_epoch_micros(1_935_669_600_000_000, Some(0));
+    assert_eq!(format_instant(&later).unwrap(), "2031-05-04T14:00:00+00:00");
+    // A count one microsecond before the epoch floors into the
+    // last microsecond of 1969, never toward zero.
+    let before = Instant::from_epoch_micros(-1, Some(0));
+    assert_eq!(
+        format_instant(&before).unwrap(),
+        "1969-12-31T23:59:59.999999+00:00"
+    );
+}
+
+#[test]
+fn from_epoch_micros_past_the_storage_edge_refuses_at_rendering() {
+    // A day count of 2^64 stored unchecked would narrow to day
+    // zero and render as the epoch. The constructor clamps it
+    // to the first refused day instead, and the rendering
+    // refuses it with the range refusal.
+    let wrapped = Instant::from_epoch_micros((1_i128 << 64) * 86_400_000_000, None);
+    let err = format_instant(&wrapped).expect_err("the wrapped count refuses");
+    assert_eq!(
+        err.message(),
+        "the instant stands outside the range the switch can record"
+    );
+    // A count at the top of the i128 range with an offset past
+    // it saturates instead of overflowing, and refuses the same
+    // way, as does its mirror at the bottom of the range.
+    let topped = Instant::from_epoch_micros(i128::MAX, Some(1));
+    assert!(format_instant(&topped).is_err());
+    let bottomed = Instant::from_epoch_micros(i128::MIN, Some(-1));
+    assert!(format_instant(&bottomed).is_err());
+}
+
+#[test]
 fn from_civil_refuses_parts_past_the_valid_bounds() {
     // Every refusal is the typed invalid request error. The
     // absurd magnitudes here are the ones the standards probe
@@ -4232,7 +4276,12 @@ fn cli_stage_and_log_carry_no_model_surface() {
 /// reads it, the anchor the command line constructions hang
 /// from.
 fn wall_second() -> Instant {
-    let text = format_instant(&Instant::now_utc()).expect("the wall clock formats");
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_micros() as i128)
+        .unwrap_or(0);
+    let now = Instant::from_epoch_micros(micros, Some(0));
+    let text = format_instant(&now).expect("the wall clock formats");
     parse_instant(&format!("{}+00:00", &text[..19])).expect("the whole second parses")
 }
 
