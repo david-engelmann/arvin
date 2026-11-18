@@ -3083,12 +3083,18 @@ fn dump_json_string(text: &str, out: &mut String) {
 // ----------------------------------------------------------------
 // The switch.
 
-/// The outcome of one evaluation of one run.
+/// The outcome of one evaluation of one run. The appended
+/// field carries the record the evaluation appended, or
+/// stands empty where it appended none, so a caller
+/// reporting the consultation of a model evaluation reads
+/// that record from the report itself and never reads the
+/// log back to find it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StageReport {
     pub run: String,
     pub stage: String,
     pub reasons: Vec<String>,
+    pub appended: Option<Record>,
 }
 
 fn stage_index(stage: &str) -> usize {
@@ -4362,7 +4368,7 @@ impl Switch {
     }
 
     /// Evaluate one run at the instant and report its stage and
-    /// reasons.
+    /// reasons and the record the evaluation appended.
     pub fn stage(&self, run_id: &Value, now: &Instant) -> Result<StageReport> {
         self.evaluate(run_id, now, None)
     }
@@ -4371,7 +4377,8 @@ impl Switch {
     /// point of DM-13, consulting the caller supplied transport
     /// at most once where a seat of DM-13 stands open, and
     /// report the stage and reasons the combined evaluation
-    /// reaches. With no transport configured the evaluation is
+    /// reaches and the record the evaluation appended. With
+    /// no transport configured the evaluation is
     /// the stage operation exactly. A host context supplied
     /// with no transport to carry it, and a host context past
     /// the bound of DM-14, are caller errors refused before any
@@ -4430,8 +4437,16 @@ impl Switch {
                 run: run_id,
                 stage: "kill".to_string(),
                 reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
+                appended: None,
             });
         }
+        // The length of the log before the branches below
+        // run. An evaluation appends at most one record, so
+        // the report at the tail reads the appended record
+        // off the log's growth across the evaluation, inside
+        // the one lock, and no caller reads the log back to
+        // find it.
+        let log_len = document.runs[index].log.len();
         let (warranted, reasons) = warrant(&document.runs[index], now)?;
         let recorded = stage_index(&document.runs[index].stage);
         let stale = *now < reference_instant(&document.runs[index]);
@@ -4619,6 +4634,11 @@ impl Switch {
             run: run_id,
             stage: document.runs[index].stage.clone(),
             reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
+            appended: if document.runs[index].log.len() > log_len {
+                document.runs[index].log.last().cloned()
+            } else {
+                None
+            },
         })
     }
 
