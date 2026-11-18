@@ -25,10 +25,11 @@
 //!
 //! The register call returns the stored facts of the run it
 //! opens as a plain dictionary, the stage call returns its
-//! report as a plain dictionary carrying the stage name and
+//! report as a plain dictionary carrying the stage name,
 //! the reasons the command line prints under it, and the
-//! stage_with_model call returns the same report for an
-//! evaluation that consulted a model under DM-20, the spend
+//! record the evaluation appended, and the stage_with_model
+//! call returns the same report for an evaluation that
+//! consulted a model under DM-20, the spend
 //! call returns the accumulated spend, the pull call returns
 //! the stage name, and the log call returns the decision
 //! records as plain dictionaries carrying every field the
@@ -325,12 +326,18 @@ fn register_dict(
 
 /// Translate one stage report into a plain dictionary carrying
 /// the stage name and the reasons the command line prints
-/// under it.
+/// under it, and the record the evaluation appended, rendered
+/// as the log call renders a record, or null where the
+/// evaluation appended none.
 fn stage_dict(py: Python<'_>, report: &StageReport) -> PyResult<Py<PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("run", &report.run)?;
     dict.set_item("stage", &report.stage)?;
     dict.set_item("reasons", &report.reasons)?;
+    match &report.appended {
+        Some(record) => dict.set_item("appended", record_dict(py, record)?)?,
+        None => dict.set_item("appended", py.None())?,
+    }
     Ok(dict.unbind())
 }
 
@@ -463,7 +470,8 @@ fn pull(py: Python<'_>, state: PathBuf, run: &str, now: &str) -> PyResult<String
 }
 
 /// Evaluate a run at the instant and return its report as a
-/// plain dictionary carrying the stage name and its reasons.
+/// plain dictionary carrying the stage name and its reasons
+/// and the record the evaluation appended.
 ///
 /// The now argument is the current instant as ISO 8601 text.
 #[pyfunction]
@@ -717,8 +725,9 @@ fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
 
 /// Evaluate a run at the instant with a model consulted under
 /// DM-20, and return its report as a plain dictionary carrying
-/// the stage name and its reasons, the same report the stage
-/// call returns.
+/// the stage name and its reasons and the record the
+/// evaluation appended, the same report the stage call
+/// returns.
 ///
 /// The judge argument names a helper program the subprocess
 /// transport calls, judge_args carries the arguments handed to

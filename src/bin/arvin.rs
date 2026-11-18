@@ -22,8 +22,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use arvin::{
-    consultation_from_reply_body, format_instant, py_float_repr, py_printable, py_repr_str, Error,
-    FixtureTransport, Instant, ModelTransport, SubprocessTransport, Switch, Value,
+    consultation_from_reply_body, py_float_repr, py_printable, py_repr_str, Error,
+    FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
     DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
     MODEL_NAME, TIMEOUT_WHOLE_CEILING,
 };
@@ -914,26 +914,12 @@ fn stage_command(
     } else {
         None
     };
-    // The consultation lines are read from the log the
-    // evaluation leaves behind, identified without trusting
-    // the clock that chose them. The sequence number of the
-    // last record standing before the evaluation is noted, and
-    // the lines print only from a stage record standing
-    // exactly one sequence past it, stamped with the instant
-    // the command passed to the entry point, carrying a
-    // consultation pattern. In the single invocation case
-    // those conditions hold together exactly when the
-    // evaluation appended a consultation record.
-    let noted = switch
-        .log(run_value)
-        .ok()
-        .and_then(|records| records.last().map(|record| record.seq));
     let report = switch.stage_with_model(run_value, now, transport, host_context)?;
     println!("stage {}", report.stage);
     for reason in &report.reasons {
         println!("reason {reason}");
     }
-    if let Some(lines) = consultation_lines(switch, run_value, noted, now) {
+    if let Some(lines) = report.appended.as_ref().and_then(consultation_lines) {
         for line in lines {
             println!("{line}");
         }
@@ -999,27 +985,18 @@ fn read_judge_fixture(path: &str) -> Result<String, Error> {
 }
 
 /// The consultation lines the stage command prints after its
-/// stage and reason lines, read from the record the evaluation
-/// appended, or nothing where the record standing last is not
-/// that record or carries no consultation. The confidence and
-/// the score render by the library float rendering the
-/// document writer uses, so the printed numbers and the stored
-/// fields cannot disagree.
-fn consultation_lines(
-    switch: &Switch,
-    run_value: &Value,
-    noted: Option<u64>,
-    now: &Instant,
-) -> Option<Vec<String>> {
-    let noted = noted?;
-    let records = switch.log(run_value).ok()?;
-    let record = records.last()?;
-    if record.kind != "stage" || record.seq != noted + 1 {
-        return None;
-    }
-    if record.at != format_instant(now).ok()? {
-        return None;
-    }
+/// stage and reason lines, read from the record the
+/// evaluation handed back in its report, or nothing where
+/// that record carries no consultation. Only a consultation
+/// record carries a model name, so the model fields of the
+/// record are the whole identification, read off the record
+/// the evaluation itself appended inside its lock, and no
+/// second reading of the state and no reconstruction after
+/// the fact stands between the evaluation and its lines.
+/// The confidence and the score render by the library float
+/// rendering the document writer uses, so the printed
+/// numbers and the stored fields cannot disagree.
+fn consultation_lines(record: &Record) -> Option<Vec<String>> {
     let model = record.model_name.as_ref()?;
     if let Some(class) = &record.fallback_taken {
         Some(vec![format!("model {model}"), format!("fallback {class}")])

@@ -3315,6 +3315,89 @@ fn no_transport_model_evaluation_matches_the_stage_operation_byte_for_byte() {
     );
 }
 
+#[test]
+fn the_report_carries_the_record_a_rise_appends() {
+    // DM-A16: the evaluation hands the record it appended
+    // back in its report, so a caller reads the record from
+    // the report and never reads the log back to find it.
+    let dir = TestDir::new("report-appended-rise");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    let report = switch.stage(&text("run-a"), &at(61)).unwrap();
+    assert_eq!(report.stage, "warn");
+    let appended = report.appended.expect("the rise appended its record");
+    assert_eq!(appended.kind, "stage");
+    assert_eq!(appended.stage, "warn");
+    assert_eq!(appended.model_name, None);
+    assert_eq!(appended, last_record(&switch));
+}
+
+#[test]
+fn the_report_carries_the_consultation_record() {
+    let dir = TestDir::new("report-appended-consultation");
+    let switch = switch_at_warn(&dir);
+    let transport = fixture_transport(vec![verdict(Verdict::Escalate, 0.9, 0.5)]);
+    let report = switch
+        .stage_with_model(&text("run-a"), &at(61), Some(&transport), None)
+        .unwrap();
+    assert_eq!(report.stage, "throttle");
+    let appended = report
+        .appended
+        .expect("the consultation appended its record");
+    assert_eq!(appended.model_name.as_deref(), Some(MODEL_NAME));
+    assert_eq!(appended.model_verdict.as_deref(), Some("escalate"));
+    assert_eq!(appended.model_confidence, Some(0.9));
+    assert_eq!(appended, last_record(&switch));
+}
+
+#[test]
+fn the_report_carries_the_step_down_record_and_none_for_the_advance() {
+    let dir = TestDir::new("report-appended-step-down");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.stage(&text("run-a"), &at(61)).unwrap();
+    switch
+        .prove(&text("run-a"), &text("working"), &at(61))
+        .unwrap();
+    // The first clean evaluation only advances the fall
+    // count and appends nothing, and the report says so,
+    // where the record standing last in the log is the
+    // proof record a hand back of the log's tail would
+    // wrongly carry.
+    let advancing = switch.stage(&text("run-a"), &at(61)).unwrap();
+    assert_eq!(advancing.stage, "warn");
+    assert_eq!(advancing.appended, None);
+    // The second completes the fall and appends the step
+    // down record, and the report carries that record.
+    let stepped = switch.stage(&text("run-a"), &at(61)).unwrap();
+    assert_eq!(stepped.stage, "none");
+    let appended = stepped.appended.expect("the step down appended its record");
+    assert_eq!(appended.kind, "stage");
+    assert_eq!(appended.stage, "none");
+    assert_eq!(appended, last_record(&switch));
+}
+
+#[test]
+fn the_report_carries_no_record_where_an_evaluation_appends_none() {
+    // A quiet evaluation at none appends nothing.
+    let dir = TestDir::new("report-appended-quiet");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    let report = switch.stage(&text("run-a"), &at(30)).unwrap();
+    assert_eq!(report.stage, "none");
+    assert_eq!(report.appended, None);
+    // An evaluation of a killed run appends nothing, and
+    // its report carries none rather than the pull record
+    // that stands last in the log.
+    let dir = TestDir::new("report-appended-killed");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    switch.pull(&text("run-a"), &at(1)).unwrap();
+    let report = switch.stage(&text("run-a"), &at(500)).unwrap();
+    assert_eq!(report.stage, "kill");
+    assert_eq!(report.appended, None);
+}
+
 /// Write a state text into a fresh directory and read its log,
 /// expecting the corruption refusal, with the bytes standing
 /// unchanged after the refused read.
