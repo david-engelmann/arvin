@@ -3441,17 +3441,26 @@ fn render_vignette(
     if matches!(seat, Seat::Fall) {
         lines.push("This evaluation is the second of the two consecutive clean evaluations the fall requires.".to_string());
     }
-    let stage_records: Vec<&Record> = run
+    // The picture carries the last five stage records and no
+    // more, so the rendering counts them and walks from the
+    // skip point instead of collecting every stage record the
+    // log has accumulated into a vector it reads five of.
+    let stage_count = run
         .log
         .iter()
         .filter(|record| record.kind == "stage")
-        .collect();
-    if stage_records.is_empty() {
+        .count();
+    if stage_count == 0 {
         lines.push("No stage record stands in the log.".to_string());
     } else {
         lines.push("The last stage records in sequence order stand as follows.".to_string());
-        let skip = stage_records.len().saturating_sub(5);
-        for record in &stage_records[skip..] {
+        let skip = stage_count.saturating_sub(5);
+        for record in run
+            .log
+            .iter()
+            .filter(|record| record.kind == "stage")
+            .skip(skip)
+        {
             let at = record.instant;
             let naming = if record.reasons.is_empty() {
                 "naming no reasons".to_string()
