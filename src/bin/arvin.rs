@@ -168,7 +168,7 @@ fn eprint_line(text: &str) {
 fn print_line(text: &str) {
     let stdout = std::io::stdout();
     let mut lock = stdout.lock();
-    if writeln!(lock, "{text}").is_err() {
+    if writeln!(lock, "{text}").is_err() || lock.flush().is_err() {
         eprint_line("error: the command's output could not be written");
         std::process::exit(1);
     }

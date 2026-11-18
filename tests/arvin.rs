@@ -4892,9 +4892,16 @@ fn contract_states_the_reply_bound_the_transport_enforces() {
 
 /// Run the CLI with stdout redirected to the full device, so
 /// every write the command makes to stdout fails, returning
-/// the exit code and the stderr text.
+/// the exit code and the stderr text. The device is opened
+/// for writing: a read only descriptor's writes are silently
+/// accepted by the standard output layer, so the read only
+/// form would let every command pass and the drive would
+/// prove nothing.
 fn run_cli_stdout_full(args: &[&str]) -> (i32, String) {
-    let full = std::fs::File::open("/dev/full").expect("the full device opens");
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("the full device opens");
     let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
         .args(args)
         .stdout(std::process::Stdio::from(full))
