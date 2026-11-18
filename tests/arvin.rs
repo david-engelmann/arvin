@@ -1132,6 +1132,27 @@ fn from_epoch_micros_builds_the_instant_the_count_names() {
 }
 
 #[test]
+fn from_epoch_micros_past_the_storage_edge_refuses_at_rendering() {
+    // A day count of 2^64 stored unchecked would narrow to day
+    // zero and render as the epoch. The constructor clamps it
+    // to the first refused day instead, and the rendering
+    // refuses it with the range refusal.
+    let wrapped = Instant::from_epoch_micros((1_i128 << 64) * 86_400_000_000, None);
+    let err = format_instant(&wrapped).expect_err("the wrapped count refuses");
+    assert_eq!(
+        err.message(),
+        "the instant stands outside the range the switch can record"
+    );
+    // A count at the top of the i128 range with an offset past
+    // it saturates instead of overflowing, and refuses the same
+    // way, as does its mirror at the bottom of the range.
+    let topped = Instant::from_epoch_micros(i128::MAX, Some(1));
+    assert!(format_instant(&topped).is_err());
+    let bottomed = Instant::from_epoch_micros(i128::MIN, Some(-1));
+    assert!(format_instant(&bottomed).is_err());
+}
+
+#[test]
 fn from_civil_refuses_parts_past_the_valid_bounds() {
     // Every refusal is the typed invalid request error. The
     // absurd magnitudes here are the ones the standards probe

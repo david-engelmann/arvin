@@ -1167,14 +1167,21 @@ impl Instant {
     /// stands. This constructor reads no clock and refuses
     /// nothing. An instant it builds outside the recorded range
     /// is refused where it is rendered, by format_instant, as
-    /// every instant outside the range is. A caller that owns a
+    /// every instant outside the range is. A count past the
+    /// storage's own edge builds the nearest day past the
+    /// recorded range instead of wrapping into an unrelated
+    /// day, so the refusal still fires. A caller that owns a
     /// clock read converts its reading through here (the command
     /// line is the one such caller in this repo), so the library
     /// itself reads no wall clock.
     pub fn from_epoch_micros(epoch_micros: i128, offset_micros: Option<i64>) -> Instant {
-        let local = epoch_micros + offset_micros.unwrap_or(0) as i128;
+        let local = epoch_micros.saturating_add(offset_micros.unwrap_or(0) as i128);
         let days = local.div_euclid(86_400_000_000);
         let rest = local.rem_euclid(86_400_000_000);
+        let days = days.clamp(
+            days_from_civil(1, 1, 1) as i128 - 1,
+            days_from_civil(9999, 12, 31) as i128 + 1,
+        );
         Instant {
             days: days as i64,
             secs: (rest / 1_000_000) as u32,
