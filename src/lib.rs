@@ -1162,17 +1162,16 @@ impl Instant {
         })
     }
 
-    /// The current instant in UTC, the one clock read the command
-    /// line performs. The library itself reads no wall clock.
-    pub fn now_utc() -> Instant {
-        let micros = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_micros() as i128)
-            .unwrap_or(0);
-        Instant::from_epoch_micros(micros, Some(0))
-    }
-
-    fn from_epoch_micros(epoch_micros: i128, offset_micros: Option<i64>) -> Instant {
+    /// The instant at a count of microseconds since the Unix
+    /// epoch, read against an offset in microseconds where one
+    /// stands. This constructor reads no clock and refuses
+    /// nothing. An instant it builds outside the recorded range
+    /// is refused where it is rendered, by format_instant, as
+    /// every instant outside the range is. A caller that owns a
+    /// clock read converts its reading through here (the command
+    /// line is the one such caller in this repo), so the library
+    /// itself reads no wall clock.
+    pub fn from_epoch_micros(epoch_micros: i128, offset_micros: Option<i64>) -> Instant {
         let local = epoch_micros + offset_micros.unwrap_or(0) as i128;
         let days = local.div_euclid(86_400_000_000);
         let rest = local.rem_euclid(86_400_000_000);

@@ -645,6 +645,18 @@ fn first_undecodable_argument(os_argv: &[std::ffi::OsString]) -> Option<usize> {
     (0..os_argv.len()).find(|&i| !exempt[i] && os_argv[i].to_str().is_none())
 }
 
+/// The current instant in UTC. The command line is the one
+/// clock reader in the repo (CONTRACT DM-6): it reads SystemTime
+/// here and passes the instant in, and the library reads no
+/// wall clock.
+fn now_utc() -> Instant {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_micros() as i128)
+        .unwrap_or(0);
+    Instant::from_epoch_micros(micros, Some(0))
+}
+
 fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode, Error> {
     if let Some(index) = first_undecodable_argument(os_argv) {
         return Ok(parser_fail(
@@ -794,7 +806,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
         ));
     }
     let switch = Switch::new(state_path.unwrap());
-    let now = Instant::now_utc();
+    let now = now_utc();
     let run = args.positionals.first().cloned().unwrap_or_default();
     let run_value = Value::Str(run.clone());
     match command.as_str() {
