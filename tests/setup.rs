@@ -504,3 +504,49 @@ fn codepoint_scan_skips_a_file_with_an_uppercase_binary_suffix() {
     assert!(result.stdout.contains("em dash U+2014 count 0"));
     assert!(result.stdout.contains("en dash U+2013 count 0"));
 }
+
+#[test]
+fn codepoint_scan_refuses_an_extra_argument() {
+    // DM-A25: the scanner read its root from the first
+    // argument and never examined the rest, so a call naming
+    // two clean roots scanned one and reported success for
+    // the whole call. The call now refuses before any
+    // scanning, at exit 2, with empty stdout.
+    let first = temp_dir("extra-arg-first");
+    let second = temp_dir("extra-arg-second");
+    std::fs::write(first.join("clean.md"), "clean").unwrap();
+    std::fs::write(second.join("clean.md"), "clean").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_codepoint_scan"))
+        .arg(&first)
+        .arg(&second)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "scan error, unexpected extra argument after the scan root\n"
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn codepoint_scan_reports_a_failed_output_write() {
+    // DM-A24: the scanner printed its report through the
+    // panicking macros, so a failed write panicked. The
+    // report now goes out through a checked writer, and a
+    // failed write answers the scan error line at exit 2.
+    let dir = temp_dir("full-output");
+    std::fs::write(dir.join("note.md"), "a\u{2014}b").unwrap();
+    let full = std::fs::File::open("/dev/full").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_codepoint_scan"))
+        .arg(&dir)
+        .stdout(std::process::Stdio::from(full))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "scan error, the scan output could not be written\n"
+    );
+}

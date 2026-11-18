@@ -21,13 +21,20 @@
 //! never exclude the root itself, and every file the walk reaches
 //! is scanned, whatever its name or suffix, apart from the known
 //! binary suffixes, and a file that does not decode as UTF-8 fails
-//! the scan loudly instead of passing unseen. Two limits of the
-//! walk stand named rather than fixed, exactly as they stood under
+//! the scan loudly instead of passing unseen. An argument
+//! standing after the scan root refuses the call as a scan
+//! error at exit 2, because a call naming two roots must not
+//! report success for a scan of one of them. The report is
+//! assembled and written once through a checked writer, and
+//! a failed write answers a scan error at exit 2 rather than
+//! escaping as a panic. Two limits of the walk stand named
+//! rather than fixed, exactly as they stood under
 //! the setup scanner. A directory that stands in the tree only as
 //! a symlink is not descended into, so the files beneath it pass
 //! unscanned, and a FIFO standing in the tree blocks the read that
 //! reaches it.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -94,11 +101,12 @@ fn collect(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), ScanError> {
     Ok(())
 }
 
-fn scan(root: &Path) -> Result<(usize, usize), ScanError> {
+fn scan(root: &Path) -> Result<(usize, usize, String), ScanError> {
     let mut files = Vec::new();
     collect(root, &mut files)?;
     let mut em_count = 0;
     let mut en_count = 0;
+    let mut report = String::new();
     for path in &files {
         let bytes = std::fs::read(path)
             .map_err(|err| ScanError(format!("cannot read {}, {err}", path.display())))?;
@@ -108,23 +116,48 @@ fn scan(root: &Path) -> Result<(usize, usize), ScanError> {
         let file_em = text.matches(EM_DASH).count();
         let file_en = text.matches(EN_DASH).count();
         if file_em > 0 || file_en > 0 {
-            println!("{}: em dash {file_em}, en dash {file_en}", path.display());
+            report.push_str(&format!(
+                "{}: em dash {file_em}, en dash {file_en}\n",
+                path.display()
+            ));
         }
         em_count += file_em;
         en_count += file_en;
     }
-    Ok((em_count, en_count))
+    Ok((em_count, en_count, report))
+}
+
+/// Write one line to stderr, fallibly. The result is
+/// ignored on purpose: the reporter of a scan failure must
+/// not itself panic when stderr also fails, and the exit
+/// code carries the failure either way.
+fn eprint_line(text: &str) {
+    let stderr = std::io::stderr();
+    let mut lock = stderr.lock();
+    let _ = writeln!(lock, "{text}");
 }
 
 fn main() -> ExitCode {
-    let root = std::env::args_os()
+    let mut args = std::env::args_os();
+    let root = args
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+    if args.next().is_some() {
+        eprint_line("scan error, unexpected extra argument after the scan root");
+        return ExitCode::from(2);
+    }
     match scan(&root) {
-        Ok((em_count, en_count)) => {
-            println!("em dash U+2014 count {em_count}");
-            println!("en dash U+2013 count {en_count}");
+        Ok((em_count, en_count, report)) => {
+            let text = format!(
+                "{report}em dash U+2014 count {em_count}\nen dash U+2013 count {en_count}\n"
+            );
+            let stdout = std::io::stdout();
+            let mut lock = stdout.lock();
+            if lock.write_all(text.as_bytes()).is_err() {
+                eprint_line("scan error, the scan output could not be written");
+                return ExitCode::from(2);
+            }
             if em_count > 0 || en_count > 0 {
                 ExitCode::from(1)
             } else {
@@ -132,7 +165,7 @@ fn main() -> ExitCode {
             }
         }
         Err(ScanError(message)) => {
-            eprintln!("scan error, {message}");
+            eprint_line(&format!("scan error, {message}"));
             ExitCode::from(2)
         }
     }
