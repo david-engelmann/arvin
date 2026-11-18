@@ -154,7 +154,7 @@ fn main() -> ExitCode {
             );
             let stdout = std::io::stdout();
             let mut lock = stdout.lock();
-            if lock.write_all(text.as_bytes()).is_err() {
+            if lock.write_all(text.as_bytes()).is_err() || lock.flush().is_err() {
                 eprint_line("scan error, the scan output could not be written");
                 return ExitCode::from(2);
             }

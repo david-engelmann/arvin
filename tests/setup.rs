@@ -274,9 +274,9 @@ fn ci_binding_job_runs_both_binding_suites() {
             .any(|f| f == "tests/test_binding_smoke.py"),
         "{replay_only:?}"
     );
-    let borrowed = binding_pytest_files(&format!(
-        "jobs:\n  test:\n    steps:\n      - run: python -m pytest tests/test_binding_smoke.py tests/test_binding_replay.py\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest tests/test_binding_smoke.py\n"
-    ));
+    let borrowed = binding_pytest_files(
+        "jobs:\n  test:\n    steps:\n      - run: python -m pytest tests/test_binding_smoke.py tests/test_binding_replay.py\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest tests/test_binding_smoke.py\n",
+    );
     assert!(
         !borrowed.iter().any(|f| f == "tests/test_binding_replay.py"),
         "{borrowed:?}"
@@ -535,9 +535,16 @@ fn codepoint_scan_reports_a_failed_output_write() {
     // panicking macros, so a failed write panicked. The
     // report now goes out through a checked writer, and a
     // failed write answers the scan error line at exit 2.
+    // The device is opened for writing, because a read only
+    // descriptor's writes are silently accepted by the
+    // standard output layer and the drive would prove
+    // nothing.
     let dir = temp_dir("full-output");
     std::fs::write(dir.join("note.md"), "a\u{2014}b").unwrap();
-    let full = std::fs::File::open("/dev/full").unwrap();
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_codepoint_scan"))
         .arg(&dir)
         .stdout(std::process::Stdio::from(full))
