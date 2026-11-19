@@ -499,48 +499,48 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
     Ok(result)
 }
 
+/// The values recorded under one option name, in the order
+/// the caller named them. The option readers state their
+/// direction and their projection over this one scan, so the
+/// name matching stands in one place.
+fn option_values<'a>(args: &'a SubArgs, name: &str) -> Vec<&'a SubValue> {
+    args.options
+        .iter()
+        .filter(|(seen, _)| seen == name)
+        .map(|(_, value)| value)
+        .collect()
+}
+
 fn option_text<'a>(args: &'a SubArgs, name: &str) -> Option<&'a str> {
-    args.options.iter().rev().find_map(|(seen, value)| {
-        if seen == name {
-            match value {
-                SubValue::Text(text) => Some(text.as_str()),
-                SubValue::Int(_) => None,
-            }
-        } else {
-            None
-        }
-    })
+    option_values(args, name)
+        .into_iter()
+        .rev()
+        .find_map(|value| match value {
+            SubValue::Text(text) => Some(text.as_str()),
+            SubValue::Int(_) => None,
+        })
 }
 
 /// Every value of a repeatable option, in the order the
 /// caller named them.
 fn option_list<'a>(args: &'a SubArgs, name: &str) -> Vec<&'a str> {
-    args.options
-        .iter()
-        .filter_map(|(seen, value)| {
-            if seen == name {
-                match value {
-                    SubValue::Text(text) => Some(text.as_str()),
-                    SubValue::Int(_) => None,
-                }
-            } else {
-                None
-            }
+    option_values(args, name)
+        .into_iter()
+        .filter_map(|value| match value {
+            SubValue::Text(text) => Some(text.as_str()),
+            SubValue::Int(_) => None,
         })
         .collect()
 }
 
 fn option_int<'a>(args: &'a SubArgs, name: &str) -> Option<&'a Value> {
-    args.options.iter().rev().find_map(|(seen, value)| {
-        if seen == name {
-            match value {
-                SubValue::Int(value) => Some(value),
-                SubValue::Text(_) => None,
-            }
-        } else {
-            None
-        }
-    })
+    option_values(args, name)
+        .into_iter()
+        .rev()
+        .find_map(|value| match value {
+            SubValue::Int(value) => Some(value),
+            SubValue::Text(_) => None,
+        })
 }
 
 fn require(command: &str, args: &SubArgs) -> Result<(), ParserError> {
