@@ -4137,7 +4137,17 @@ impl Switch {
     }
 
     fn read<T>(&self, action: impl FnOnce(&Document) -> Result<T>) -> Result<T> {
-        if !self.path.exists() {
+        // Only an absent file reads as the empty document, the
+        // discrimination read_document makes on the read itself.
+        // A path that cannot be examined at all stands as a
+        // state file that cannot be read, the corrupt error
+        // DM-8 seats, and never as an absent file.
+        let absent = match std::fs::metadata(&self.path) {
+            Ok(_) => false,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) => return Err(corrupt(format!("the state file cannot be read, {err}"))),
+        };
+        if absent {
             return action(&empty_document());
         }
         let _guard = self.locked(false)?;
