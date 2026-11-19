@@ -756,23 +756,13 @@ fn stage_with_model(
     fixture: Option<&Bound<'_, PyAny>>,
     host_context: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
-    if judge.is_some() && fixture.is_some() {
-        return Err(fixture_refusal(
-            "exactly one judge form may stand named on one call".to_string(),
-        ));
-    }
-    if judge.is_none() {
-        if judge_args.is_some() {
-            return Err(fixture_refusal(
-                "a judge argument stands named with no judge program to carry it".to_string(),
-            ));
-        }
-        if judge_timeout.is_some() {
-            return Err(fixture_refusal(
-                "a judge timeout stands named with no judge program to carry it".to_string(),
-            ));
-        }
-    }
+    arvin_core::validate_judge_form(
+        judge.is_some(),
+        fixture.is_some(),
+        judge_args.is_some(),
+        judge_timeout.is_some(),
+    )
+    .map_err(to_py_error)?;
     // The fixture translation runs only where a fixture
     // stands named, and the transport's pinned name comes
     // from that one translation, the name the consultation
