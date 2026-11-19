@@ -1276,15 +1276,26 @@ fn digit2(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
     Some(((first - b'0') as u32 * 10 + (second - b'0') as u32, pos + 2))
 }
 
-fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
-    // The caller has seen the dot or comma. At least one digit
-    // must follow, and the digits past the sixth are truncated.
+fn parse_fraction(bytes: &[u8], pos: usize, allow_bare: bool) -> Option<(u32, usize)> {
+    // The caller has seen the dot or comma. The digits past the
+    // sixth are truncated. A separator with no digits after it
+    // reads as a zero fraction only where the caller allows the
+    // bare form and a zone designator stands right after the
+    // separator, the Python parser's own reading, probed at
+    // 2033-01-01T00:00:00 before +00:00 and before Z reading as
+    // the whole second and the same text at the end of the
+    // string refusing (DM-A41). The offset caller never allows
+    // it, because nothing follows an offset in this grammar and
+    // the parser refuses the bare separator there.
     let mut index = pos + 1;
     let start = index;
     while index < bytes.len() && bytes[index].is_ascii_digit() {
         index += 1;
     }
     if index == start {
+        if allow_bare && matches!(bytes.get(index), Some(b'Z' | b'+' | b'-')) {
+            return Some((0, index));
+        }
         return None;
     }
     let mut micros: u32 = 0;
@@ -1386,13 +1397,20 @@ fn parse_date(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
 /// stated once here (DM-A18). Each caller reads its own grammar
 /// around the tail and bounds what the tail returns in its own
 /// way. The tail returns the minutes and the seconds and the
-/// micros it read and the position it reached.
-fn parse_clock_tail(bytes: &[u8], mut pos: usize) -> Option<(u32, u32, u32, usize)> {
+/// micros it read and the position it reached. The instant
+/// caller allows the bare fraction form of DM-A41 and the
+/// offset caller does not, and the flag carries that ruling
+/// into the fraction reader.
+fn parse_clock_tail(
+    bytes: &[u8],
+    mut pos: usize,
+    allow_bare_fraction: bool,
+) -> Option<(u32, u32, u32, usize)> {
     let mut minutes = 0u32;
     let mut seconds = 0u32;
     let mut micros = 0u32;
     if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-        let (parsed, next) = parse_fraction(bytes, pos)?;
+        let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
         micros = parsed;
         pos = next;
     } else if pos < bytes.len() && bytes[pos] == b':' {
@@ -1401,7 +1419,7 @@ fn parse_clock_tail(bytes: &[u8], mut pos: usize) -> Option<(u32, u32, u32, usiz
         minutes = parsed;
         pos = next;
         if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
+            let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
             micros = parsed;
             pos = next;
         } else if pos < bytes.len() && bytes[pos] == b':' {
@@ -1410,7 +1428,7 @@ fn parse_clock_tail(bytes: &[u8], mut pos: usize) -> Option<(u32, u32, u32, usiz
             seconds = parsed;
             pos = next;
             if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
+                let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
                 micros = parsed;
                 pos = next;
             }
@@ -1420,7 +1438,7 @@ fn parse_clock_tail(bytes: &[u8], mut pos: usize) -> Option<(u32, u32, u32, usiz
         minutes = parsed;
         pos = next;
         if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
+            let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
             micros = parsed;
             pos = next;
         } else if pos < bytes.len() && bytes[pos].is_ascii_digit() {
@@ -1428,7 +1446,7 @@ fn parse_clock_tail(bytes: &[u8], mut pos: usize) -> Option<(u32, u32, u32, usiz
             seconds = parsed;
             pos = next;
             if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
+                let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
                 micros = parsed;
                 pos = next;
             }
@@ -1442,7 +1460,7 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
     let mut pos = start + 1;
     let (hours, next) = digit2(bytes, pos)?;
     pos = next;
-    let (minutes, seconds, mut micros, pos) = parse_clock_tail(bytes, pos)?;
+    let (minutes, seconds, mut micros, pos) = parse_clock_tail(bytes, pos, false)?;
     let whole = hours * 3600 + minutes * 60 + seconds;
     if whole >= 86_400 {
         return None;
@@ -1480,7 +1498,7 @@ pub fn parse_instant(text: &str) -> Option<Instant> {
     pos += text[pos..].chars().next()?.len_utf8();
     let (hours, next) = digit2(bytes, pos)?;
     pos = next;
-    let (minutes, seconds, micros, mut pos) = parse_clock_tail(bytes, pos)?;
+    let (minutes, seconds, micros, mut pos) = parse_clock_tail(bytes, pos, true)?;
     if hours > 23 || minutes > 59 || seconds > 59 {
         return None;
     }

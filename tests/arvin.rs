@@ -5049,3 +5049,48 @@ fn contract_states_the_reply_bound_the_transport_enforces() {
         "a verdict body padded inside the stated bound lands its verdict"
     );
 }
+
+#[test]
+fn a_bare_fraction_separator_before_a_zone_reads_as_no_fraction() {
+    // The Python parser reads a fraction separator with no
+    // digits after it as a zero fraction where a zone
+    // designator follows, probed at Python 3.12.3 (DM-A41).
+    // Each shape below lands at the same instant as its form
+    // with no separator, and every one refuses on the code
+    // before the repair.
+    for (bare, plain) in [
+        ("2033-01-01T00:00:00.+00:00", "2033-01-01T00:00:00+00:00"),
+        ("2033-01-01T00:00:00.Z", "2033-01-01T00:00:00Z"),
+        ("2033-01-01T00:00:00,-05:00", "2033-01-01T00:00:00-05:00"),
+        ("2033-01-01T00:00.+00:00", "2033-01-01T00:00+00:00"),
+        ("2033-01-01T00.+00:00", "2033-01-01T00+00:00"),
+        ("2033-01-01T000000.+00:00", "2033-01-01T000000+00:00"),
+    ] {
+        let bare_instant = parse_instant(bare).expect(bare);
+        let plain_instant = parse_instant(plain).expect(plain);
+        assert_eq!(bare_instant, plain_instant, "{bare}");
+    }
+}
+
+#[test]
+fn a_bare_fraction_separator_without_a_zone_still_refuses() {
+    // A preservation pin in the standing sense. These shapes
+    // refuse on the code as it stands and must keep refusing,
+    // the bare separator at the end of the string, the bare
+    // separator inside an offset, a doubled separator, and a
+    // second separator after a digit carrying fraction. The
+    // pin fails on the plausible wrong form of the DM-A41
+    // repair, an unconditional admission of zero digits in
+    // the shared fraction reader, which would read the end
+    // of string and offset shapes the reference refuses.
+    for text in [
+        "2033-01-01T00:00:00.",
+        "2033-01-01T00:00:00+00:00:00.",
+        "2033-01-01T00:00:00+00:00.",
+        "2033-01-01T00:00:00..5+00:00",
+        "2033-01-01T00:00:00.5.5+00:00",
+        "2033-01-01T00:00:00+00:.5",
+    ] {
+        assert!(parse_instant(text).is_none(), "{text}");
+    }
+}
