@@ -22,8 +22,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use arvin::{
-    consultation_from_reply_body, py_float_repr, py_printable, py_repr_str, Error,
-    FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
+    consultation_from_reply_body, py_float_repr, py_printable, py_repr_str, validate_judge_form,
+    Error, FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
     DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
     MODEL_NAME, TIMEOUT_WHOLE_CEILING,
 };
@@ -886,23 +886,12 @@ fn stage_command(
     let judge_args = option_list(args, "--judge-arg");
     let judge_timeout = option_int(args, "--judge-timeout");
     let host_context = option_text(args, "--host-context");
-    if judge.is_some() && fixture_file.is_some() {
-        return Err(Error::InvalidRequest(
-            "exactly one judge form may stand named on one call".to_string(),
-        ));
-    }
-    if judge.is_none() {
-        if !judge_args.is_empty() {
-            return Err(Error::InvalidRequest(
-                "a judge argument stands named with no judge program to carry it".to_string(),
-            ));
-        }
-        if judge_timeout.is_some() {
-            return Err(Error::InvalidRequest(
-                "a judge timeout stands named with no judge program to carry it".to_string(),
-            ));
-        }
-    }
+    validate_judge_form(
+        judge.is_some(),
+        fixture_file.is_some(),
+        !judge_args.is_empty(),
+        judge_timeout.is_some(),
+    )?;
     let timeout = match judge_timeout {
         Some(value) => Some(judge_timeout_duration(value)?),
         None => None,

@@ -3727,6 +3727,44 @@ pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
     }
 }
 
+/// The judge form discipline of the model surface, stated
+/// once here because both surfaces enforce it, the command
+/// line in its stage command and the binding in its
+/// stage_with_model call. Exactly one of the judge and
+/// fixture forms may stand named on one call, and a judge
+/// argument or a judge timeout named with no judge program
+/// to carry it refuses. Each surface computes its own named
+/// predicates, the command line's repeatable judge argument
+/// counting as named where its list stands nonempty and the
+/// binding's where its argument stands present, and crosses
+/// the refusal this function returns in its own discipline
+/// (DM-A42).
+pub fn validate_judge_form(
+    judge_named: bool,
+    fixture_named: bool,
+    judge_argument_named: bool,
+    judge_timeout_named: bool,
+) -> Result<()> {
+    if judge_named && fixture_named {
+        return Err(Error::InvalidRequest(
+            "exactly one judge form may stand named on one call".to_string(),
+        ));
+    }
+    if !judge_named {
+        if judge_argument_named {
+            return Err(Error::InvalidRequest(
+                "a judge argument stands named with no judge program to carry it".to_string(),
+            ));
+        }
+        if judge_timeout_named {
+            return Err(Error::InvalidRequest(
+                "a judge timeout stands named with no judge program to carry it".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The widest reply body the subprocess transport will read.
 /// A body past the bound is a malformed reply under DM-16.
 const REPLY_MAX_BYTES: usize = 64 * 1024;
