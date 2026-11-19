@@ -671,6 +671,44 @@ def test_stage_with_model_refuses_two_judge_forms_together(tmp_path):
     assert len(arvin.log(state, "run-a")) == 2
 
 
+def test_stage_with_model_refuses_orphan_judge_parts(tmp_path):
+    # The two orphan part refusals of the judge form stand
+    # pinned on the command line and stand unpinned here
+    # without this test (DM-A45). A judge argument or a judge
+    # timeout named with no judge program to carry it refuses
+    # in the shared words, before any state stands touched.
+    # The pin fails where the binding's form call passes a
+    # wrong named predicate for either part, because the call
+    # then runs the no transport path and appends a record
+    # instead of raising.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as argument:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge_args=["--flag"],
+        )
+    assert str(argument.value) == (
+        "a judge argument stands named with no judge program to carry it"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+    with pytest.raises(arvin.InvalidRequestError) as timeout:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge_timeout=30,
+        )
+    assert str(timeout.value) == (
+        "a judge timeout stands named with no judge program to carry it"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+
 def test_stage_with_model_refuses_a_label_outside_the_three(tmp_path):
     state = str(tmp_path / "state.json")
     seat_at_warn(state)
