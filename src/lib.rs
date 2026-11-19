@@ -2103,6 +2103,25 @@ struct WarrantContext {
     missed_proof_limit: i64,
 }
 
+/// Note a live proof against the latest the history join
+/// tracks, moving the instant and the text that carried it
+/// together. The standing proof judgment at the join's end
+/// compares instants and its refusal messages print the
+/// text, so the two halves of the pair must never move
+/// apart, and the update stands stated once here for both
+/// seats that perform it.
+fn note_live_proof(
+    latest: &mut Option<Instant>,
+    latest_text: &mut Option<String>,
+    record: &Record,
+) {
+    let instant = record.instant;
+    if latest.is_none_or(|standing| instant > standing) {
+        *latest = Some(instant);
+        *latest_text = Some(record.at.clone());
+    }
+}
+
 /// Join the decision log of one run against the standing fields
 /// of the run, as the Round 2 amendment under DM-7 states. The
 /// per record and per field validators have already judged each
@@ -2171,11 +2190,7 @@ fn validate_history_against_standing(
         }
         if position == 0 {
             if record.kind == "proof" && is_live(position) {
-                let instant = record.instant;
-                if live_proof_latest.is_none_or(|latest| instant > latest) {
-                    live_proof_latest = Some(instant);
-                    live_proof_latest_text = Some(record.at.clone());
-                }
+                note_live_proof(&mut live_proof_latest, &mut live_proof_latest_text, record);
             }
             continue;
         }
@@ -2221,11 +2236,7 @@ fn validate_history_against_standing(
             _ => {}
         }
         if record.kind == "proof" && is_live(position) {
-            let instant = record.instant;
-            if live_proof_latest.is_none_or(|latest| instant > latest) {
-                live_proof_latest = Some(instant);
-                live_proof_latest_text = Some(record.at.clone());
-            }
+            note_live_proof(&mut live_proof_latest, &mut live_proof_latest_text, record);
         }
     }
     let last = log.last().expect("a validated log holds a record");
