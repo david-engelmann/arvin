@@ -1820,6 +1820,26 @@ fn keys_match(map: &std::collections::HashMap<&str, &Value>, expected: &[&str]) 
     map.len() == expected.len() && expected.iter().all(|key| map.contains_key(key))
 }
 
+/// A stored model unit field of a stage record, null or a
+/// number in the unit interval of DM-17, read for the two
+/// fields that carry one, the confidence and the score, so
+/// the rule and its refusal stand in one place (DM-A43).
+fn stored_model_unit(
+    map: &std::collections::HashMap<&str, &Value>,
+    field: &str,
+    noun: &str,
+) -> Result<Option<f64>> {
+    match map[field] {
+        Value::Null => Ok(None),
+        value => match model_number_unit(value) {
+            Some(number) => Ok(Some(number)),
+            None => Err(corrupt(format!(
+                "a stage record carries a model {noun} outside the range from 0 to 1"
+            ))),
+        },
+    }
+}
+
 fn validate_record(value: &Value, position: usize) -> Result<Record> {
     let map = match object_map(value) {
         Some(map) => map,
@@ -1934,32 +1954,8 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     ))
                 }
             };
-            let model_confidence = match map["model_confidence"] {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model confidence outside \
-                             the range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
-            let model_score = match map["model_score"] {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model score outside the \
-                             range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
+            let model_confidence = stored_model_unit(&map, "model_confidence", "confidence")?;
+            let model_score = stored_model_unit(&map, "model_score", "score")?;
             let fallback_taken = match map["fallback_taken"] {
                 Value::Null => None,
                 Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
