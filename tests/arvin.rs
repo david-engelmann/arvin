@@ -740,6 +740,34 @@ fn a_missing_state_file_reads_as_not_found_and_creates_nothing() {
     assert_eq!(switch.log(&text("run-a")).unwrap()[0].kind, "registered");
 }
 
+#[test]
+fn a_state_path_that_cannot_be_examined_reads_as_corrupt() {
+    // DM-A40. The state path stands under a regular file, so
+    // examining it fails for a reason that is not absence.
+    // The log read answers the corrupt error DM-8 seats for
+    // a state file that cannot be read, and never the not
+    // found answer a run lookup gives on the empty document
+    // a missing file yields. The permission form of the same
+    // failure cannot be pinned portably, a test running as
+    // root examining through permissions that refuse other
+    // users, so the pin drives the discrimination through
+    // the not a directory failure.
+    let dir = TestDir::new("unexaminable-path");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"a regular file").unwrap();
+    let switch = Switch::new(blocker.join("state.json"));
+    let err = switch.log(&text("run-a")).unwrap_err();
+    assert!(
+        matches!(err, Error::Corrupt(_)),
+        "expected a corrupt state error, got {err:?}"
+    );
+    assert!(
+        err.message().contains("the state file cannot be read"),
+        "expected the refusal to name the unreadable state file, got {:?}",
+        err.message()
+    );
+}
+
 macro_rules! invalid_id_case {
     ($name:ident, $bad:expr) => {
         #[test]
