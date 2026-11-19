@@ -4934,6 +4934,43 @@ fn cli_model_judge_timeout_past_the_widest_duration_refuses_at_exit_2() {
 }
 
 #[test]
+fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_helper() {
+    // The inside edge of the timeout boundary the refusal
+    // pins judge from the outside. The widest whole second
+    // count the duration holds stands accepted by the
+    // surface, and the transport then fails the call on its
+    // checked deadline addition before any helper stands,
+    // the arm DM-21 states, so the helper never runs and
+    // the consultation lands in the call failed class.
+    let dir = TestDir::new("model-cli-timeout-widest");
+    let switch = cli_switch_at_warn(&dir);
+    let marker = dir.path().join("helper-ran.txt");
+    let body = format!(
+        "#!/bin/sh\nprintf '%s' 'ran' > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+        marker.display()
+    );
+    let helper = write_helper(&dir, "judge.sh", &body);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-timeout",
+            "18446744073709551615",
+        ],
+        0,
+    );
+    let record = last_record(&switch);
+    assert_fallback(&stdout, &record, "call failed");
+    assert!(!marker.exists(), "the helper never ran");
+}
+
+#[test]
 fn a_helper_written_from_the_contract_statement_alone_interoperates() {
     // The stranger pin of DM-21. The helper below is written
     // from the obligation's statement alone. It finds the
