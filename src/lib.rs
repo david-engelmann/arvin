@@ -762,8 +762,19 @@ impl Parser {
         text: &str,
         value: Value,
     ) -> std::result::Result<Value, ParseFailure> {
-        if self.chars[self.pos..].starts_with(&text.chars().collect::<Vec<char>>()[..]) {
-            self.pos += text.len();
+        // The literal stands compared character by character
+        // against the input ahead of the cursor, with no
+        // collection built for the comparison. The literals of
+        // this grammar are plain ASCII, so the character count
+        // the comparison advances is the byte count the
+        // position has always advanced by.
+        let matched = text
+            .chars()
+            .zip(self.chars[self.pos..].iter())
+            .take_while(|(want, have)| want == *have)
+            .count();
+        if matched == text.chars().count() {
+            self.pos += matched;
             Ok(value)
         } else {
             Err(self.syntax("a value stands expected here"))
@@ -3005,6 +3016,15 @@ fn write_document(document: &Document) -> String {
     out
 }
 
+// The indent of one level stands pushed unit by unit, so a
+// dump builds no throwaway string for every element and
+// closing bracket it writes.
+fn push_indent(out: &mut String, level: usize) {
+    for _ in 0..level {
+        out.push_str("  ");
+    }
+}
+
 fn dump_value(value: &Value, level: usize, out: &mut String) {
     match value {
         Value::Null => out.push_str("null"),
@@ -3021,14 +3041,14 @@ fn dump_value(value: &Value, level: usize, out: &mut String) {
             }
             out.push_str("[\n");
             for (index, item) in items.iter().enumerate() {
-                out.push_str(&"  ".repeat(level + 1));
+                push_indent(out, level + 1);
                 dump_value(item, level + 1, out);
                 if index + 1 < items.len() {
                     out.push(',');
                 }
                 out.push('\n');
             }
-            out.push_str(&"  ".repeat(level));
+            push_indent(out, level);
             out.push(']');
         }
         Value::Object(pairs) => {
@@ -3038,7 +3058,7 @@ fn dump_value(value: &Value, level: usize, out: &mut String) {
             }
             out.push_str("{\n");
             for (index, (key, item)) in pairs.iter().enumerate() {
-                out.push_str(&"  ".repeat(level + 1));
+                push_indent(out, level + 1);
                 dump_json_string(key, out);
                 out.push_str(": ");
                 dump_value(item, level + 1, out);
@@ -3047,7 +3067,7 @@ fn dump_value(value: &Value, level: usize, out: &mut String) {
                 }
                 out.push('\n');
             }
-            out.push_str(&"  ".repeat(level));
+            push_indent(out, level);
             out.push('}');
         }
     }
