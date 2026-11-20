@@ -768,6 +768,101 @@ fn a_state_path_that_cannot_be_examined_reads_as_corrupt() {
     );
 }
 
+#[test]
+fn a_lock_file_that_cannot_be_opened_refuses_as_a_failure() {
+    // DM-A48. A directory standing at the lock path makes
+    // the lock open fail on every platform and under every
+    // user, root included, so the refusal is driven through
+    // the standing directory and not through permissions, the
+    // portable form of the failure, as DM-A40's pin drives
+    // its unexaminable state path through the not a directory
+    // failure. A read and a registration alike refuse in the
+    // failure class DM-8 seats for the switch's own
+    // operational failures, naming the lock file that cannot
+    // be opened, where a state file that cannot be read
+    // refuses as corruption at DM-A40's neighbouring seat, so
+    // a regression classing this seat as corruption fails
+    // here. The state bytes stand unchanged after both
+    // refusals.
+    let dir = TestDir::new("unopenable-lock");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    let before = state_bytes(&dir);
+    let lock_path = dir.path().join("state.json.lock");
+    std::fs::remove_file(&lock_path).expect("the lock file stands");
+    std::fs::create_dir(&lock_path).expect("the lock directory stands");
+    let err = switch.log(&text("run-a")).unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the lock file beside the state file cannot be opened"),
+        "expected the refusal to name the unopenable lock file, got {:?}",
+        err.message()
+    );
+    let err = register_values(
+        &switch,
+        &text("run-b"),
+        &t0(),
+        &int(60),
+        &int(5),
+        &Value::Null,
+        &Value::Null,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the lock file beside the state file cannot be opened"),
+        "expected the refusal to name the unopenable lock file, got {:?}",
+        err.message()
+    );
+    assert_eq!(state_bytes(&dir), before);
+}
+
+#[test]
+fn a_state_path_under_a_regular_file_refuses_registration_as_a_failure() {
+    // DM-A48. The state path stands under a regular file, so
+    // the directory holding it cannot be created, and a
+    // registration refuses in the failure class naming that
+    // directory, before any lock stands taken or any read
+    // stands attempted. A read of the same path refuses as
+    // corruption under DM-A40's pin, the state file that
+    // cannot be read, so the two classes stand discriminated
+    // at one path shape, the mutation answering for its
+    // uncreatable directory and the read for its unreadable
+    // file.
+    let dir = TestDir::new("uncreatable-directory");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"a regular file").unwrap();
+    let switch = Switch::new(blocker.join("state.json"));
+    let err = register_values(
+        &switch,
+        &text("run-a"),
+        &t0(),
+        &int(60),
+        &int(5),
+        &Value::Null,
+        &Value::Null,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the directory holding the state file cannot be created"),
+        "expected the refusal to name the uncreatable directory, got {:?}",
+        err.message()
+    );
+}
+
 macro_rules! invalid_id_case {
     ($name:ident, $bad:expr) => {
         #[test]
