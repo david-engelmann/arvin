@@ -68,27 +68,28 @@ fn sub_usage(command: &str) -> &'static str {
     }
 }
 
-fn sub_help(command: &str) -> &'static str {
-    match command {
+fn sub_help(command: &str) -> String {
+    let body = match command {
         "register" => {
-            "usage: arvin register [-h] [--proof-interval PROOF_INTERVAL]\n                        [--missed-limit MISSED_LIMIT]\n                        [--soft-ceiling SOFT_CEILING]\n                        [--hard-ceiling HARD_CEILING]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
         }
         "prove" => {
-            "usage: arvin prove [-h] [--note NOTE] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
         }
         "spend" => {
-            "usage: arvin spend [-h] --amount AMOUNT run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
         }
         "pull" => {
-            "usage: arvin pull [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
         "stage" => {
-            "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--host-context HOST_CONTEXT]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
         }
         _ => {
-            "usage: arvin log [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
-    }
+    };
+    format!("{}\n\n{}", sub_usage(command), body)
 }
 
 fn value_options(command: &str) -> &'static [&'static str] {
