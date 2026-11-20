@@ -2402,6 +2402,32 @@ fn cli_error_exits_and_messages() {
 }
 
 #[test]
+fn cli_help_and_parser_errors_share_the_usage_line() {
+    // DM-A47: the help surface and the parser error surface print the
+    // command's usage line, and the two spellings stood duplicated in
+    // the binary until the help text was composed from the one usage
+    // string. This pin drives both surfaces for every command and
+    // compares the usage block each prints, so a divergence between
+    // the spellings, including a dropped composition, fails here.
+    let dir = TestDir::new("cli-usage-line");
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    for command in ["register", "prove", "spend", "pull", "stage", "log"] {
+        let (help, _) = run_cli(&["--state", &state, command, "--help"], 0);
+        let help_usage = help
+            .split("\n\n")
+            .next()
+            .expect("help opens with its usage");
+        let (_, stderr) = run_cli(&["--state", &state, command], 2);
+        let error_line = format!("\narvin {command}: error:");
+        let error_usage = stderr
+            .split(&error_line)
+            .next()
+            .expect("the parser error opens with its usage");
+        assert_eq!(help_usage, error_usage, "command {command}");
+    }
+}
+
+#[test]
 fn a_stored_instant_with_a_non_ascii_separator_reads() {
     // The Python instant reader takes any single character as
     // the separator between the date and the time, including a
