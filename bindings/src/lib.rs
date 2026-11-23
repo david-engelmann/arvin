@@ -25,10 +25,11 @@
 //!
 //! The register call returns the stored facts of the run it
 //! opens as a plain dictionary, the stage call returns its
-//! report as a plain dictionary carrying the stage name and
+//! report as a plain dictionary carrying the stage name,
 //! the reasons the command line prints under it, and the
-//! stage_with_model call returns the same report for an
-//! evaluation that consulted a model under DM-20, the spend
+//! record the evaluation appended, and the stage_with_model
+//! call returns the same report for an evaluation that
+//! consulted a model under DM-20, the spend
 //! call returns the accumulated spend, the pull call returns
 //! the stage name, and the log call returns the decision
 //! records as plain dictionaries carrying every field the
@@ -44,7 +45,7 @@ use std::time::Duration;
 use pyo3::create_exception;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyTuple};
 
 use arvin_core::{
     Consultation, Error, FixtureTransport, Instant, Record, StageReport, SubprocessTransport,
@@ -297,6 +298,7 @@ fn register_dict(
         seq: 1,
         kind: "registered".to_string(),
         at: registered_at.clone(),
+        instant: *now,
         stage: "none".to_string(),
         reasons: Vec::new(),
         model_name: None,
@@ -324,12 +326,18 @@ fn register_dict(
 
 /// Translate one stage report into a plain dictionary carrying
 /// the stage name and the reasons the command line prints
-/// under it.
+/// under it, and the record the evaluation appended, rendered
+/// as the log call renders a record, or null where the
+/// evaluation appended none.
 fn stage_dict(py: Python<'_>, report: &StageReport) -> PyResult<Py<PyDict>> {
     let dict = PyDict::new(py);
     dict.set_item("run", &report.run)?;
     dict.set_item("stage", &report.stage)?;
     dict.set_item("reasons", &report.reasons)?;
+    match &report.appended {
+        Some(record) => dict.set_item("appended", record_dict(py, record)?)?,
+        None => dict.set_item("appended", py.None())?,
+    }
     Ok(dict.unbind())
 }
 
@@ -462,7 +470,8 @@ fn pull(py: Python<'_>, state: PathBuf, run: &str, now: &str) -> PyResult<String
 }
 
 /// Evaluate a run at the instant and return its report as a
-/// plain dictionary carrying the stage name and its reasons.
+/// plain dictionary carrying the stage name and its reasons
+/// and the record the evaluation appended.
 ///
 /// The now argument is the current instant as ISO 8601 text.
 #[pyfunction]
@@ -483,6 +492,37 @@ fn stage(py: Python<'_>, state: PathBuf, run: &str, now: &str) -> PyResult<Py<Py
 /// the refusal the way every library refusal crosses.
 fn fixture_refusal(message: String) -> PyErr {
     to_py_error(Error::InvalidRequest(message))
+}
+
+/// Convert the judge_args argument of stage_with_model into
+/// the argument vector the subprocess transport carries. The
+/// argument stands documented as a list or tuple of strings,
+/// and it is converted element by element here, in the
+/// surface's own refusal discipline, so a value that is no
+/// list or tuple and an element that is no string each refuse
+/// as an invalid request in the library voice. A plain
+/// extraction would raise the binding framework's own error
+/// in the framework's wording instead, the one caller error
+/// of the model surface that escaped the discipline every
+/// neighbouring conversion crosses in.
+fn judge_arguments(value: &Bound<'_, PyAny>) -> PyResult<Vec<String>> {
+    let items: Vec<Bound<'_, PyAny>> = if let Ok(list) = value.cast::<PyList>() {
+        list.iter().collect()
+    } else if let Ok(tuple) = value.cast::<PyTuple>() {
+        tuple.iter().collect()
+    } else {
+        return Err(fixture_refusal(
+            "the judge arguments stand as no list or tuple".to_string(),
+        ));
+    };
+    let mut arguments = Vec::new();
+    for item in items {
+        let argument: String = item
+            .extract()
+            .map_err(|_| fixture_refusal("a judge argument stands as no string".to_string()))?;
+        arguments.push(argument);
+    }
+    Ok(arguments)
 }
 
 /// Translate a fixture dictionary into the one consultation
@@ -685,8 +725,9 @@ fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
 
 /// Evaluate a run at the instant with a model consulted under
 /// DM-20, and return its report as a plain dictionary carrying
-/// the stage name and its reasons, the same report the stage
-/// call returns.
+/// the stage name and its reasons and the record the
+/// evaluation appended, the same report the stage call
+/// returns.
 ///
 /// The judge argument names a helper program the subprocess
 /// transport calls, judge_args carries the arguments handed to
@@ -715,23 +756,13 @@ fn stage_with_model(
     fixture: Option<&Bound<'_, PyAny>>,
     host_context: Option<&str>,
 ) -> PyResult<Py<PyDict>> {
-    if judge.is_some() && fixture.is_some() {
-        return Err(fixture_refusal(
-            "exactly one judge form may stand named on one call".to_string(),
-        ));
-    }
-    if judge.is_none() {
-        if judge_args.is_some() {
-            return Err(fixture_refusal(
-                "a judge argument stands named with no judge program to carry it".to_string(),
-            ));
-        }
-        if judge_timeout.is_some() {
-            return Err(fixture_refusal(
-                "a judge timeout stands named with no judge program to carry it".to_string(),
-            ));
-        }
-    }
+    arvin_core::validate_judge_form(
+        judge.is_some(),
+        fixture.is_some(),
+        judge_args.is_some(),
+        judge_timeout.is_some(),
+    )
+    .map_err(to_py_error)?;
     // The fixture translation runs only where a fixture
     // stands named, and the transport's pinned name comes
     // from that one translation, the name the consultation
@@ -754,7 +785,7 @@ fn stage_with_model(
         None => None,
     };
     let arguments: Vec<String> = match judge_args {
-        Some(value) => value.extract()?,
+        Some(value) => judge_arguments(value)?,
         None => Vec::new(),
     };
     let now = instant_argument(now)?;

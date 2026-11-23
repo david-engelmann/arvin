@@ -423,3 +423,19 @@ fn codepoint_scan_skips_a_file_with_an_uppercase_binary_suffix() {
     assert!(result.stdout.contains("em dash U+2014 count 0"));
     assert!(result.stdout.contains("en dash U+2013 count 0"));
 }
+
+#[test]
+fn codepoint_scan_refuses_a_root_that_does_not_stand() {
+    // The port names this refusal a deliberate difference
+    // from the setup scanner, which exited 0 with zero
+    // counts over a root that does not stand, a false green
+    // over a tree that was never scanned. The root here
+    // stands beneath a directory the test creates, and the
+    // root itself is never created.
+    let root = temp_dir("missing-root").join("no-such-tree");
+    let result = scan_tree(&root);
+    assert_eq!(result.status, 2);
+    assert!(result.stderr.contains("scan error"), "{}", result.stderr);
+    assert!(result.stderr.contains("no-such-tree"), "{}", result.stderr);
+    assert!(result.stdout.is_empty(), "{}", result.stdout);
+}

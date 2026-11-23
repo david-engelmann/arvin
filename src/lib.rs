@@ -1173,20 +1173,26 @@ impl Instant {
         })
     }
 
-    /// The current instant in UTC, the one clock read the command
-    /// line performs. The library itself reads no wall clock.
-    pub fn now_utc() -> Instant {
-        let micros = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_micros() as i128)
-            .unwrap_or(0);
-        Instant::from_epoch_micros(micros, Some(0))
-    }
-
-    fn from_epoch_micros(epoch_micros: i128, offset_micros: Option<i64>) -> Instant {
-        let local = epoch_micros + offset_micros.unwrap_or(0) as i128;
+    /// The instant at a count of microseconds since the Unix
+    /// epoch, read against an offset in microseconds where one
+    /// stands. This constructor reads no clock and refuses
+    /// nothing. An instant it builds outside the recorded range
+    /// is refused where it is rendered, by format_instant, as
+    /// every instant outside the range is. A count past the
+    /// storage's own edge builds the nearest day past the
+    /// recorded range instead of wrapping into an unrelated
+    /// day, so the refusal still fires. A caller that owns a
+    /// clock read converts its reading through here (the command
+    /// line is the one such caller in this repo), so the library
+    /// itself reads no wall clock.
+    pub fn from_epoch_micros(epoch_micros: i128, offset_micros: Option<i64>) -> Instant {
+        let local = epoch_micros.saturating_add(offset_micros.unwrap_or(0) as i128);
         let days = local.div_euclid(86_400_000_000);
         let rest = local.rem_euclid(86_400_000_000);
+        let days = days.clamp(
+            days_from_civil(1, 1, 1) as i128 - 1,
+            days_from_civil(9999, 12, 31) as i128 + 1,
+        );
         Instant {
             days: days as i64,
             secs: (rest / 1_000_000) as u32,
@@ -1281,15 +1287,26 @@ fn digit2(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
     Some(((first - b'0') as u32 * 10 + (second - b'0') as u32, pos + 2))
 }
 
-fn parse_fraction(bytes: &[u8], pos: usize) -> Option<(u32, usize)> {
-    // The caller has seen the dot or comma. At least one digit
-    // must follow, and the digits past the sixth are truncated.
+fn parse_fraction(bytes: &[u8], pos: usize, allow_bare: bool) -> Option<(u32, usize)> {
+    // The caller has seen the dot or comma. The digits past the
+    // sixth are truncated. A separator with no digits after it
+    // reads as a zero fraction only where the caller allows the
+    // bare form and a zone designator stands right after the
+    // separator, the Python parser's own reading, probed at
+    // 2033-01-01T00:00:00 before +00:00 and before Z reading as
+    // the whole second and the same text at the end of the
+    // string refusing (DM-A41). The offset caller never allows
+    // it, because nothing follows an offset in this grammar and
+    // the parser refuses the bare separator there.
     let mut index = pos + 1;
     let start = index;
     while index < bytes.len() && bytes[index].is_ascii_digit() {
         index += 1;
     }
     if index == start {
+        if allow_bare && matches!(bytes.get(index), Some(b'Z' | b'+' | b'-')) {
+            return Some((0, index));
+        }
         return None;
     }
     let mut micros: u32 = 0;
@@ -1385,16 +1402,26 @@ fn parse_date(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
     Some((days_from_civil(year, month, day), pos))
 }
 
-fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
-    let sign: i64 = if bytes[start] == b'-' { -1 } else { 1 };
-    let mut pos = start + 1;
-    let (hours, next) = digit2(bytes, pos)?;
-    pos = next;
+/// The clock tail the two instant grammars share, the fraction
+/// and the colon separated and the bare digit minute and second
+/// forms that may follow the hours of a time or of an offset,
+/// stated once here (DM-A18). Each caller reads its own grammar
+/// around the tail and bounds what the tail returns in its own
+/// way. The tail returns the minutes and the seconds and the
+/// micros it read and the position it reached. The instant
+/// caller allows the bare fraction form of DM-A41 and the
+/// offset caller does not, and the flag carries that ruling
+/// into the fraction reader.
+fn parse_clock_tail(
+    bytes: &[u8],
+    mut pos: usize,
+    allow_bare_fraction: bool,
+) -> Option<(u32, u32, u32, usize)> {
     let mut minutes = 0u32;
     let mut seconds = 0u32;
     let mut micros = 0u32;
     if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-        let (parsed, next) = parse_fraction(bytes, pos)?;
+        let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
         micros = parsed;
         pos = next;
     } else if pos < bytes.len() && bytes[pos] == b':' {
@@ -1403,7 +1430,7 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
         minutes = parsed;
         pos = next;
         if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
+            let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
             micros = parsed;
             pos = next;
         } else if pos < bytes.len() && bytes[pos] == b':' {
@@ -1412,7 +1439,7 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
             seconds = parsed;
             pos = next;
             if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
+                let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
                 micros = parsed;
                 pos = next;
             }
@@ -1422,7 +1449,7 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
         minutes = parsed;
         pos = next;
         if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
+            let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
             micros = parsed;
             pos = next;
         } else if pos < bytes.len() && bytes[pos].is_ascii_digit() {
@@ -1430,12 +1457,21 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
             seconds = parsed;
             pos = next;
             if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
+                let (parsed, next) = parse_fraction(bytes, pos, allow_bare_fraction)?;
                 micros = parsed;
                 pos = next;
             }
         }
     }
+    Some((minutes, seconds, micros, pos))
+}
+
+fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
+    let sign: i64 = if bytes[start] == b'-' { -1 } else { 1 };
+    let mut pos = start + 1;
+    let (hours, next) = digit2(bytes, pos)?;
+    pos = next;
+    let (minutes, seconds, mut micros, pos) = parse_clock_tail(bytes, pos, false)?;
     let whole = hours * 3600 + minutes * 60 + seconds;
     if whole >= 86_400 {
         return None;
@@ -1455,7 +1491,7 @@ fn parse_offset(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
 pub fn parse_instant(text: &str) -> Option<Instant> {
     let bytes = text.as_bytes();
     let (days, mut pos) = parse_date(bytes, 0)?;
-    let (mut secs, mut micros) = (0u32, 0u32);
+    let (mut secs, micros) = (0u32, 0u32);
     let mut offset_micros: Option<i64> = None;
     if pos == bytes.len() {
         return Some(Instant {
@@ -1473,51 +1509,7 @@ pub fn parse_instant(text: &str) -> Option<Instant> {
     pos += text[pos..].chars().next()?.len_utf8();
     let (hours, next) = digit2(bytes, pos)?;
     pos = next;
-    let mut minutes = 0u32;
-    let mut seconds = 0u32;
-    if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-        let (parsed, next) = parse_fraction(bytes, pos)?;
-        micros = parsed;
-        pos = next;
-    } else if pos < bytes.len() && bytes[pos] == b':' {
-        pos += 1;
-        let (parsed, next) = digit2(bytes, pos)?;
-        minutes = parsed;
-        pos = next;
-        if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
-            micros = parsed;
-            pos = next;
-        } else if pos < bytes.len() && bytes[pos] == b':' {
-            pos += 1;
-            let (parsed, next) = digit2(bytes, pos)?;
-            seconds = parsed;
-            pos = next;
-            if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
-                micros = parsed;
-                pos = next;
-            }
-        }
-    } else if pos < bytes.len() && bytes[pos].is_ascii_digit() {
-        let (parsed, next) = digit2(bytes, pos)?;
-        minutes = parsed;
-        pos = next;
-        if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-            let (parsed, next) = parse_fraction(bytes, pos)?;
-            micros = parsed;
-            pos = next;
-        } else if pos < bytes.len() && bytes[pos].is_ascii_digit() {
-            let (parsed, next) = digit2(bytes, pos)?;
-            seconds = parsed;
-            pos = next;
-            if pos < bytes.len() && (bytes[pos] == b'.' || bytes[pos] == b',') {
-                let (parsed, next) = parse_fraction(bytes, pos)?;
-                micros = parsed;
-                pos = next;
-            }
-        }
-    }
+    let (minutes, seconds, micros, mut pos) = parse_clock_tail(bytes, pos, true)?;
     if hours > 23 || minutes > 59 || seconds > 59 {
         return None;
     }
@@ -1725,12 +1717,18 @@ pub fn validate_note(value: &Value) -> Result<()> {
 /// The ancestry field of DM-22 stands beside the five in the
 /// eleven key shape, on a stage record that carries a
 /// consultation or an ancestry pattern, and stands null by
-/// absence in every other shape.
+/// absence in every other shape. The instant stands beside
+/// the text it was parsed from, parsed once where the record
+/// is validated or appended, so the join and the evaluation
+/// judge the instant itself and never parse the text again.
+/// The text stays, because the writer renders the stored
+/// spelling.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {
     pub seq: u64,
     pub kind: String,
     pub at: String,
+    pub instant: Instant,
     pub stage: String,
     pub reasons: Vec<String>,
     pub model_name: Option<String>,
@@ -1788,12 +1786,14 @@ fn model_number_unit(value: &Value) -> Option<f64> {
 struct Run {
     id: String,
     registered_at: String,
+    registered_instant: Instant,
     proof_interval_seconds: JsonInt,
     missed_proof_limit: i64,
     soft_ceiling: Option<i64>,
     hard_ceiling: Option<i64>,
     spend_total: i64,
     last_proof_at: Option<String>,
+    last_proof_instant: Option<Instant>,
     stage: String,
     clear_streak: JsonInt,
     killed: bool,
@@ -1872,7 +1872,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             )))
         }
     };
-    parse_stored_instant(map["at"])?;
+    let instant = parse_stored_instant(map["at"])?;
     let at = map["at"]
         .as_str()
         .expect("a parsed instant is text")
@@ -2062,6 +2062,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
         seq: position as u64 + 1,
         kind,
         at,
+        instant,
         stage,
         reasons,
         model_name,
@@ -2117,6 +2118,39 @@ fn missed_warrant_index(missed: i128, missed_proof_limit: i64) -> usize {
     }
 }
 
+/// The warrant terms of one run, the facts the history join
+/// and its stage record judge both judge a stage record
+/// against. They travel together through every call the two
+/// judges make, so they stand in one structure the run
+/// validator builds once, and a future term joins them here
+/// instead of widening two call surfaces.
+struct WarrantContext {
+    spend_total: i64,
+    soft_ceiling: Option<i64>,
+    hard_ceiling: Option<i64>,
+    proof_interval_seconds: JsonInt,
+    missed_proof_limit: i64,
+}
+
+/// Note a live proof against the latest the history join
+/// tracks, moving the instant and the text that carried it
+/// together. The standing proof judgment at the join's end
+/// compares instants and its refusal messages print the
+/// text, so the two halves of the pair must never move
+/// apart, and the update stands stated once here for both
+/// seats that perform it.
+fn note_live_proof(
+    latest: &mut Option<Instant>,
+    latest_text: &mut Option<String>,
+    record: &Record,
+) {
+    let instant = record.instant;
+    if latest.is_none_or(|standing| instant > standing) {
+        *latest = Some(instant);
+        *latest_text = Some(record.at.clone());
+    }
+}
+
 /// Join the decision log of one run against the standing fields
 /// of the run, as the Round 2 amendment under DM-7 states. The
 /// per record and per field validators have already judged each
@@ -2131,14 +2165,11 @@ fn validate_history_against_standing(
     id_repr: &str,
     log: &[Record],
     standing_stage: &str,
-    spend_total: i64,
+    warrant: &WarrantContext,
     last_proof_at: &Option<String>,
+    last_proof_instant: &Option<Instant>,
     clear_streak: &JsonInt,
-    soft_ceiling: Option<i64>,
-    hard_ceiling: Option<i64>,
-    proof_interval_seconds: &JsonInt,
-    missed_proof_limit: i64,
-    registered_at: &str,
+    registered_instant: &Instant,
 ) -> Result<()> {
     // One preparatory scan fixes the first record at kill and
     // the first and last live spend positions. A record stands
@@ -2163,7 +2194,6 @@ fn validate_history_against_standing(
         }
     }
     let is_live = |position: usize| first_kill.is_none_or(|kill| position < kill);
-    let registered_instant = parse_instant(registered_at).expect("a validated instant parses");
     let mut live_proof_latest: Option<Instant> = None;
     let mut live_proof_latest_text: Option<String> = None;
     // The instant of the latest stage record in sequence
@@ -2189,11 +2219,7 @@ fn validate_history_against_standing(
         }
         if position == 0 {
             if record.kind == "proof" && is_live(position) {
-                let instant = parse_instant(&record.at).expect("a validated instant parses");
-                if live_proof_latest.is_none_or(|latest| instant > latest) {
-                    live_proof_latest = Some(instant);
-                    live_proof_latest_text = Some(record.at.clone());
-                }
+                note_live_proof(&mut live_proof_latest, &mut live_proof_latest_text, record);
             }
             continue;
         }
@@ -2212,7 +2238,7 @@ fn validate_history_against_standing(
                 // The reference instant the records before this
                 // one establish, against which DM-19 floors a
                 // step down record.
-                let mut reference_floor = registered_instant;
+                let mut reference_floor = *registered_instant;
                 if let Some(latest) = live_proof_latest {
                     if latest > reference_floor {
                         reference_floor = latest;
@@ -2228,27 +2254,18 @@ fn validate_history_against_standing(
                     record,
                     &previous.stage,
                     &live_proof_latest,
-                    &registered_instant,
+                    registered_instant,
                     live_spend_bounds,
                     position,
-                    spend_total,
-                    soft_ceiling,
-                    hard_ceiling,
-                    proof_interval_seconds,
-                    missed_proof_limit,
+                    warrant,
                     &reference_floor,
                 )?;
-                last_stage_instant =
-                    Some(parse_instant(&record.at).expect("a validated instant parses"));
+                last_stage_instant = Some(record.instant);
             }
             _ => {}
         }
         if record.kind == "proof" && is_live(position) {
-            let instant = parse_instant(&record.at).expect("a validated instant parses");
-            if live_proof_latest.is_none_or(|latest| instant > latest) {
-                live_proof_latest = Some(instant);
-                live_proof_latest_text = Some(record.at.clone());
-            }
+            note_live_proof(&mut live_proof_latest, &mut live_proof_latest_text, record);
         }
     }
     let last = log.last().expect("a validated log holds a record");
@@ -2259,9 +2276,7 @@ fn validate_history_against_standing(
             last.stage
         )));
     }
-    let standing_proof = last_proof_at
-        .as_ref()
-        .map(|text| parse_instant(text).expect("a validated instant parses"));
+    let standing_proof = *last_proof_instant;
     if standing_proof != live_proof_latest {
         return Err(match (last_proof_at, &live_proof_latest_text) {
             (Some(standing), None) => corrupt(format!(
@@ -2283,10 +2298,11 @@ fn validate_history_against_standing(
             (None, None) => unreachable!("equal instants reach no refusal"),
         });
     }
-    if live_spend_bounds.0.is_none() && spend_total != 0 {
+    if live_spend_bounds.0.is_none() && warrant.spend_total != 0 {
         return Err(corrupt(format!(
-            "run {id_repr} stands with spend total {spend_total} but its log \
-             holds no live spend record"
+            "run {id_repr} stands with spend total {} but its log \
+             holds no live spend record",
+            warrant.spend_total
         )));
     }
     if clear_streak.cmp_i128(1) == Ordering::Greater {
@@ -2322,11 +2338,7 @@ fn validate_stage_record_against_warrant(
     registered_instant: &Instant,
     live_spend_bounds: (Option<usize>, Option<usize>),
     position: usize,
-    spend_total: i64,
-    soft_ceiling: Option<i64>,
-    hard_ceiling: Option<i64>,
-    proof_interval_seconds: &JsonInt,
-    missed_proof_limit: i64,
+    warrant: &WarrantContext,
     reference_floor: &Instant,
 ) -> Result<()> {
     let previous_index = stage_index(previous_stage);
@@ -2362,9 +2374,9 @@ fn validate_stage_record_against_warrant(
         }
         highest_rank = Some(rank);
     }
-    let record_instant = parse_instant(&record.at).expect("a validated instant parses");
+    let record_instant = record.instant;
     let base = live_proof_latest.unwrap_or(*registered_instant);
-    let missed = missed_count_between(&base, &record_instant, proof_interval_seconds);
+    let missed = missed_count_between(&base, &record_instant, &warrant.proof_interval_seconds);
     let missed_named = record
         .reasons
         .iter()
@@ -2393,13 +2405,16 @@ fn validate_stage_record_against_warrant(
             let before = first < position;
             let after = last > position;
             (
-                if after { 0 } else { spend_total },
-                if before { spend_total } else { 0 },
+                if after { 0 } else { warrant.spend_total },
+                if before { warrant.spend_total } else { 0 },
             )
         }
         _ => unreachable!("the preparatory scan sets both bounds or neither"),
     };
-    for (which, ceiling) in [("hard", hard_ceiling), ("soft", soft_ceiling)] {
+    for (which, ceiling) in [
+        ("hard", warrant.hard_ceiling),
+        ("soft", warrant.soft_ceiling),
+    ] {
         let name = format!("{which} ceiling");
         let named = record.reasons.iter().any(|reason| reason == &name);
         match ceiling {
@@ -2436,8 +2451,8 @@ fn validate_stage_record_against_warrant(
     let mut bounded_low = spend_low;
     let mut bounded_high = spend_high;
     for (ceiling, name) in [
-        (hard_ceiling, "hard ceiling"),
-        (soft_ceiling, "soft ceiling"),
+        (warrant.hard_ceiling, "hard ceiling"),
+        (warrant.soft_ceiling, "soft ceiling"),
     ] {
         if let Some(ceiling) = ceiling {
             if record.reasons.iter().any(|reason| reason == name) {
@@ -2453,19 +2468,21 @@ fn validate_stage_record_against_warrant(
              no spend standing at the record can carry together"
         )));
     }
-    let missed_index = missed_warrant_index(missed, missed_proof_limit);
-    let zero_threshold = soft_ceiling.or(hard_ceiling);
+    let missed_index = missed_warrant_index(missed, warrant.missed_proof_limit);
+    let zero_threshold = warrant.soft_ceiling.or(warrant.hard_ceiling);
     let mut spend_warrants: Vec<usize> = Vec::new();
     if zero_threshold.is_none_or(|threshold| bounded_low < threshold) {
         spend_warrants.push(0);
     }
-    if let Some(soft) = soft_ceiling {
+    if let Some(soft) = warrant.soft_ceiling {
         let first_at_soft = bounded_low.max(soft);
-        if first_at_soft <= bounded_high && hard_ceiling.is_none_or(|hard| first_at_soft < hard) {
+        if first_at_soft <= bounded_high
+            && warrant.hard_ceiling.is_none_or(|hard| first_at_soft < hard)
+        {
             spend_warrants.push(stage_index("cut budget"));
         }
     }
-    if let Some(hard) = hard_ceiling {
+    if let Some(hard) = warrant.hard_ceiling {
         if bounded_high >= hard {
             spend_warrants.push(stage_index("kill"));
         }
@@ -2639,7 +2656,7 @@ fn validate_run(value: &Value) -> Result<Run> {
     };
     let id = validate_stored_name(map["id"])?;
     let id_repr = py_repr_str(&id);
-    parse_stored_instant(map["registered_at"])?;
+    let registered_instant = parse_stored_instant(map["registered_at"])?;
     let registered_at = map["registered_at"]
         .as_str()
         .expect("a parsed instant is text")
@@ -2687,15 +2704,18 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let last_proof_at = match map["last_proof_at"] {
-        Value::Null => None,
+    let (last_proof_at, last_proof_instant) = match map["last_proof_at"] {
+        Value::Null => (None, None),
         value => {
-            parse_stored_instant(value)?;
-            Some(
-                value
-                    .as_str()
-                    .expect("a parsed instant is text")
-                    .to_string(),
+            let instant = parse_stored_instant(value)?;
+            (
+                Some(
+                    value
+                        .as_str()
+                        .expect("a parsed instant is text")
+                        .to_string(),
+                ),
+                Some(instant),
             )
         }
     };
@@ -2768,28 +2788,34 @@ fn validate_run(value: &Value) -> Result<Run> {
             "run {id_repr} does not open with its registration record"
         )));
     }
+    let warrant = WarrantContext {
+        spend_total,
+        soft_ceiling,
+        hard_ceiling,
+        proof_interval_seconds: proof_interval_seconds.clone(),
+        missed_proof_limit,
+    };
     validate_history_against_standing(
         &id_repr,
         &log,
         &stage,
-        spend_total,
+        &warrant,
         &last_proof_at,
+        &last_proof_instant,
         &clear_streak,
-        soft_ceiling,
-        hard_ceiling,
-        &proof_interval_seconds,
-        missed_proof_limit,
-        &registered_at,
+        &registered_instant,
     )?;
     Ok(Run {
         id,
         registered_at,
+        registered_instant,
         proof_interval_seconds,
         missed_proof_limit,
         soft_ceiling,
         hard_ceiling,
         spend_total,
         last_proof_at,
+        last_proof_instant,
         stage,
         clear_streak,
         killed,
@@ -3080,12 +3106,18 @@ fn dump_json_string(text: &str, out: &mut String) {
 // ----------------------------------------------------------------
 // The switch.
 
-/// The outcome of one evaluation of one run.
+/// The outcome of one evaluation of one run. The appended
+/// field carries the record the evaluation appended, or
+/// stands empty where it appended none, so a caller
+/// reporting the consultation of a model evaluation reads
+/// that record from the report itself and never reads the
+/// log back to find it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StageReport {
     pub run: String,
     pub stage: String,
     pub reasons: Vec<String>,
+    pub appended: Option<Record>,
 }
 
 fn stage_index(stage: &str) -> usize {
@@ -3098,13 +3130,7 @@ fn stage_index(stage: &str) -> usize {
 /// Whole proof intervals missed at the instant, deadline exact
 /// counts zero.
 fn missed_proofs(run: &Run, now: &Instant) -> Result<i128> {
-    let base_text = run.last_proof_at.as_deref().unwrap_or(&run.registered_at);
-    let base = parse_instant(base_text).ok_or_else(|| {
-        corrupt(format!(
-            "an instant field holds unparseable text {}",
-            py_repr_str(base_text)
-        ))
-    })?;
+    let base = run.last_proof_instant.unwrap_or(run.registered_instant);
     // The interval as a duration overflows the representable
     // range past the largest whole second count a duration of
     // 999999999 days holds, which is the check the Python
@@ -3173,18 +3199,16 @@ enum Seat {
 /// record in sequence order where one stands, each taken from
 /// the run as recorded.
 fn reference_instant(run: &Run) -> Instant {
-    let mut reference = parse_instant(&run.registered_at).expect("a validated instant parses");
-    if let Some(text) = &run.last_proof_at {
-        let proof = parse_instant(text).expect("a validated instant parses");
+    let mut reference = run.registered_instant;
+    if let Some(proof) = run.last_proof_instant {
         if proof > reference {
             reference = proof;
         }
     }
     for record in run.log.iter().rev() {
         if record.kind == "stage" {
-            let stage_at = parse_instant(&record.at).expect("a validated instant parses");
-            if stage_at > reference {
-                reference = stage_at;
+            if record.instant > reference {
+                reference = record.instant;
             }
             break;
         }
@@ -3425,10 +3449,9 @@ fn render_vignette(
         run.missed_proof_limit,
         int_text(&run.proof_interval_seconds)
     ));
-    let registered = parse_instant(&run.registered_at).expect("a validated instant parses");
-    match &run.last_proof_at {
-        Some(text) => {
-            let proof = parse_instant(text).expect("a validated instant parses");
+    let registered = run.registered_instant;
+    match run.last_proof_instant {
+        Some(proof) => {
             lines.push(format!(
                 "The last proof stands at an age of {} whole seconds.",
                 age_seconds(&proof, now)
@@ -3467,18 +3490,27 @@ fn render_vignette(
     if matches!(seat, Seat::Fall) {
         lines.push("This evaluation is the second of the two consecutive clean evaluations the fall requires.".to_string());
     }
-    let stage_records: Vec<&Record> = run
+    // The picture carries the last five stage records and no
+    // more, so the rendering counts them and walks from the
+    // skip point instead of collecting every stage record the
+    // log has accumulated into a vector it reads five of.
+    let stage_count = run
         .log
         .iter()
         .filter(|record| record.kind == "stage")
-        .collect();
-    if stage_records.is_empty() {
+        .count();
+    if stage_count == 0 {
         lines.push("No stage record stands in the log.".to_string());
     } else {
         lines.push("The last stage records in sequence order stand as follows.".to_string());
-        let skip = stage_records.len().saturating_sub(5);
-        for record in &stage_records[skip..] {
-            let at = parse_instant(&record.at).expect("a validated instant parses");
+        let skip = stage_count.saturating_sub(5);
+        for record in run
+            .log
+            .iter()
+            .filter(|record| record.kind == "stage")
+            .skip(skip)
+        {
+            let at = record.instant;
             let naming = if record.reasons.is_empty() {
                 "naming no reasons".to_string()
             } else {
@@ -3713,6 +3745,44 @@ pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
         confidence,
         score: (level - 1) as f64 / 9.0,
     }
+}
+
+/// The judge form discipline of the model surface, stated
+/// once here because both surfaces enforce it, the command
+/// line in its stage command and the binding in its
+/// stage_with_model call. Exactly one of the judge and
+/// fixture forms may stand named on one call, and a judge
+/// argument or a judge timeout named with no judge program
+/// to carry it refuses. Each surface computes its own named
+/// predicates, the command line's repeatable judge argument
+/// counting as named where its list stands nonempty and the
+/// binding's where its argument stands present, and crosses
+/// the refusal this function returns in its own discipline
+/// (DM-A42).
+pub fn validate_judge_form(
+    judge_named: bool,
+    fixture_named: bool,
+    judge_argument_named: bool,
+    judge_timeout_named: bool,
+) -> Result<()> {
+    if judge_named && fixture_named {
+        return Err(Error::InvalidRequest(
+            "exactly one judge form may stand named on one call".to_string(),
+        ));
+    }
+    if !judge_named {
+        if judge_argument_named {
+            return Err(Error::InvalidRequest(
+                "a judge argument stands named with no judge program to carry it".to_string(),
+            ));
+        }
+        if judge_timeout_named {
+            return Err(Error::InvalidRequest(
+                "a judge timeout stands named with no judge program to carry it".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The widest reply body the subprocess transport will read.
@@ -4143,7 +4213,17 @@ impl Switch {
     }
 
     fn read<T>(&self, action: impl FnOnce(&Document) -> Result<T>) -> Result<T> {
-        if !self.path.exists() {
+        // Only an absent file reads as the empty document, the
+        // discrimination read_document makes on the read itself.
+        // A path that cannot be examined at all stands as a
+        // state file that cannot be read, the corrupt error
+        // DM-8 seats, and never as an absent file.
+        let absent = match std::fs::metadata(&self.path) {
+            Ok(_) => false,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err) => return Err(corrupt(format!("the state file cannot be read, {err}"))),
+        };
+        if absent {
             return action(&empty_document());
         }
         let _guard = self.locked(false)?;
@@ -4176,6 +4256,7 @@ impl Switch {
             seq: run.log.len() as u64 + 1,
             kind: kind.to_string(),
             at,
+            instant: *now,
             stage: stage.to_string(),
             reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
             model_name: None,
@@ -4202,6 +4283,7 @@ impl Switch {
             seq: run.log.len() as u64 + 1,
             kind: "stage".to_string(),
             at,
+            instant: *now,
             stage: stage.to_string(),
             reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
             model_name: fields.model_name,
@@ -4262,12 +4344,14 @@ impl Switch {
             let mut run = Run {
                 id: run_id.clone(),
                 registered_at: format_instant(now)?,
+                registered_instant: *now,
                 proof_interval_seconds: JsonInt::Small(proof_interval_seconds as i128),
                 missed_proof_limit,
                 soft_ceiling,
                 hard_ceiling,
                 spend_total: 0,
                 last_proof_at: None,
+                last_proof_instant: None,
                 stage: "none".to_string(),
                 clear_streak: JsonInt::Small(0),
                 killed: false,
@@ -4293,20 +4377,13 @@ impl Switch {
             let index = Self::require_run(document, &run_id)?;
             let run = &mut document.runs[index];
             if !run.killed {
-                let stands = match &run.last_proof_at {
+                let stands = match run.last_proof_instant {
                     None => true,
-                    Some(text) => {
-                        let standing = parse_instant(text).ok_or_else(|| {
-                            corrupt(format!(
-                                "an instant field holds unparseable text {}",
-                                py_repr_str(text)
-                            ))
-                        })?;
-                        *now > standing
-                    }
+                    Some(standing) => *now > standing,
                 };
                 if stands {
                     run.last_proof_at = Some(format_instant(now)?);
+                    run.last_proof_instant = Some(*now);
                 }
             }
             let stage = run.stage.clone();
@@ -4371,7 +4448,7 @@ impl Switch {
     }
 
     /// Evaluate one run at the instant and report its stage and
-    /// reasons.
+    /// reasons and the record the evaluation appended.
     pub fn stage(&self, run_id: &Value, now: &Instant) -> Result<StageReport> {
         self.evaluate(run_id, now, None)
     }
@@ -4380,7 +4457,8 @@ impl Switch {
     /// point of DM-13, consulting the caller supplied transport
     /// at most once where a seat of DM-13 stands open, and
     /// report the stage and reasons the combined evaluation
-    /// reaches. With no transport configured the evaluation is
+    /// reaches and the record the evaluation appended. With
+    /// no transport configured the evaluation is
     /// the stage operation exactly. A host context supplied
     /// with no transport to carry it, and a host context past
     /// the bound of DM-14, are caller errors refused before any
@@ -4439,8 +4517,16 @@ impl Switch {
                 run: run_id,
                 stage: "kill".to_string(),
                 reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
+                appended: None,
             });
         }
+        // The length of the log before the branches below
+        // run. An evaluation appends at most one record, so
+        // the report at the tail reads the appended record
+        // off the log's growth across the evaluation, inside
+        // the one lock, and no caller reads the log back to
+        // find it.
+        let log_len = document.runs[index].log.len();
         let (warranted, reasons) = warrant(&document.runs[index], now)?;
         let recorded = stage_index(&document.runs[index].stage);
         let stale = *now < reference_instant(&document.runs[index]);
@@ -4628,6 +4714,11 @@ impl Switch {
             run: run_id,
             stage: document.runs[index].stage.clone(),
             reasons: reasons.iter().map(|reason| reason.to_string()).collect(),
+            appended: if document.runs[index].log.len() > log_len {
+                document.runs[index].log.last().cloned()
+            } else {
+                None
+            },
         })
     }
 
