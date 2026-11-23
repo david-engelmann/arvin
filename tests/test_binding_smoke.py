@@ -173,6 +173,9 @@ def test_the_full_lifecycle_through_the_binding(tmp_path):
         "run": "run-a",
         "stage": "cut budget",
         "reasons": ["soft ceiling"],
+        "appended": record(
+            4, "stage", T_SPEND, "cut budget", ["soft ceiling"]
+        ),
     }
 
     assert arvin.pull(state, "run-a", T_PULL) == "kill"
@@ -215,7 +218,12 @@ def test_registration_defaults_resolve_from_the_library(tmp_path):
     assert explicit["missed_proof_limit"] == opened["missed_proof_limit"]
 
     report = arvin.stage(state, "run-a", T0)
-    assert report == {"run": "run-a", "stage": "none", "reasons": []}
+    assert report == {
+        "run": "run-a",
+        "stage": "none",
+        "reasons": [],
+        "appended": None,
+    }
 
 
 def test_refusals_raise_with_the_library_messages(tmp_path):
@@ -465,7 +473,12 @@ def test_state_files_cross_between_the_binding_and_the_command_line(
     assert [entry["kind"] for entry in entries] == ["registered", "spend"]
     assert all(entry["at"].endswith("+00:00") for entry in entries)
     report = arvin.stage(other, "run-b", entries[-1]["at"])
-    assert report == {"run": "run-b", "stage": "none", "reasons": []}
+    assert report == {
+        "run": "run-b",
+        "stage": "none",
+        "reasons": [],
+        "appended": None,
+    }
     assert arvin.spend(other, "run-b", 5, entries[-1]["at"]) == 30
     entries = arvin.log(other, "run-b")
     assert run_cli(other, "log", "run-b").splitlines() == [
@@ -560,6 +573,9 @@ def seat_at_warn(state):
         "run": "run-a",
         "stage": "warn",
         "reasons": ["missed proofs"],
+        "appended": record(
+            2, "stage", T_WARN, "warn", ["missed proofs"]
+        ),
     }
 
 
@@ -578,10 +594,22 @@ def test_stage_with_model_fixture_verdict_applies_its_pattern(tmp_path):
             "score": 5 / 9,
         },
     )
+    appended = record(
+        3, "stage", T_WARN, "throttle", ["missed proofs"]
+    )
+    appended.update(
+        {
+            "model_name": "jev-1.13.0",
+            "model_verdict": "escalate",
+            "model_confidence": 0.77,
+            "model_score": 5 / 9,
+        }
+    )
     assert report == {
         "run": "run-a",
         "stage": "throttle",
         "reasons": ["missed proofs"],
+        "appended": appended,
     }
     entries = arvin.log(state, "run-a")
     last = entries[-1]
@@ -604,10 +632,18 @@ def test_stage_with_model_fixture_fallback_records_its_class(tmp_path):
         T_WARN,
         fixture={"model_name": "jev-1.13.0", "fallback": "silence"},
     )
+    appended = record(3, "stage", T_WARN, "warn", ["missed proofs"])
+    appended.update(
+        {
+            "model_name": "jev-1.13.0",
+            "fallback_taken": "silence",
+        }
+    )
     assert report == {
         "run": "run-a",
         "stage": "warn",
         "reasons": ["missed proofs"],
+        "appended": appended,
     }
     last = arvin.log(state, "run-a")[-1]
     assert last["model_name"] == "jev-1.13.0"
@@ -718,6 +754,13 @@ def seat_at_the_fall_decision(state):
         "run": "run-a",
         "stage": "throttle",
         "reasons": ["missed proofs"],
+        "appended": record(
+            3,
+            "stage",
+            "2031-05-04T14:31:00+00:00",
+            "throttle",
+            ["missed proofs"],
+        ),
     }
     arvin.prove(state, "run-a", "2031-05-04T14:32:00+00:00")
     report = arvin.stage(state, "run-a", "2031-05-04T14:33:00+00:00")
@@ -725,6 +768,7 @@ def seat_at_the_fall_decision(state):
         "run": "run-a",
         "stage": "throttle",
         "reasons": [],
+        "appended": None,
     }
 
 
@@ -753,6 +797,9 @@ def test_stage_with_model_without_a_transport_consults_nothing(tmp_path):
         "run": "run-a",
         "stage": "warn",
         "reasons": [],
+        "appended": record(
+            6, "stage", "2031-05-04T14:35:00+00:00", "warn", []
+        ),
     }
     last = arvin.log(state, "run-a")[-1]
     assert last["model_name"] is None
@@ -923,10 +970,20 @@ def test_stage_with_model_judge_args_tuple_reaches_the_helper(
         judge=str(helper),
         judge_args=("--first", "--second"),
     )
+    appended = record(3, "stage", T_WARN, "warn", ["missed proofs"])
+    appended.update(
+        {
+            "model_name": "jev-1.13.0",
+            "model_verdict": "hold",
+            "model_confidence": 0.5,
+            "model_score": 4 / 9,
+        }
+    )
     assert report == {
         "run": "run-a",
         "stage": "warn",
         "reasons": ["missed proofs"],
+        "appended": appended,
     }
     assert marker.read_text() == "--first --second"
     last = arvin.log(state, "run-a")[-1]
