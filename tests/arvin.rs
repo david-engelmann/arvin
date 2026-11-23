@@ -768,6 +768,101 @@ fn a_state_path_that_cannot_be_examined_reads_as_corrupt() {
     );
 }
 
+#[test]
+fn a_lock_file_that_cannot_be_opened_refuses_as_a_failure() {
+    // DM-A48. A directory standing at the lock path makes
+    // the lock open fail on every platform and under every
+    // user, root included, so the refusal is driven through
+    // the standing directory and not through permissions, the
+    // portable form of the failure, as DM-A40's pin drives
+    // its unexaminable state path through the not a directory
+    // failure. A read and a registration alike refuse in the
+    // failure class DM-8 seats for the switch's own
+    // operational failures, naming the lock file that cannot
+    // be opened, where a state file that cannot be read
+    // refuses as corruption at DM-A40's neighbouring seat, so
+    // a regression classing this seat as corruption fails
+    // here. The state bytes stand unchanged after both
+    // refusals.
+    let dir = TestDir::new("unopenable-lock");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    let before = state_bytes(&dir);
+    let lock_path = dir.path().join("state.json.lock");
+    std::fs::remove_file(&lock_path).expect("the lock file stands");
+    std::fs::create_dir(&lock_path).expect("the lock directory stands");
+    let err = switch.log(&text("run-a")).unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the lock file beside the state file cannot be opened"),
+        "expected the refusal to name the unopenable lock file, got {:?}",
+        err.message()
+    );
+    let err = register_values(
+        &switch,
+        &text("run-b"),
+        &t0(),
+        &int(60),
+        &int(5),
+        &Value::Null,
+        &Value::Null,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the lock file beside the state file cannot be opened"),
+        "expected the refusal to name the unopenable lock file, got {:?}",
+        err.message()
+    );
+    assert_eq!(state_bytes(&dir), before);
+}
+
+#[test]
+fn a_state_path_under_a_regular_file_refuses_registration_as_a_failure() {
+    // DM-A48. The state path stands under a regular file, so
+    // the directory holding it cannot be created, and a
+    // registration refuses in the failure class naming that
+    // directory, before any lock stands taken or any read
+    // stands attempted. A read of the same path refuses as
+    // corruption under DM-A40's pin, the state file that
+    // cannot be read, so the two classes stand discriminated
+    // at one path shape, the mutation answering for its
+    // uncreatable directory and the read for its unreadable
+    // file.
+    let dir = TestDir::new("uncreatable-directory");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"a regular file").unwrap();
+    let switch = Switch::new(blocker.join("state.json"));
+    let err = register_values(
+        &switch,
+        &text("run-a"),
+        &t0(),
+        &int(60),
+        &int(5),
+        &Value::Null,
+        &Value::Null,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the directory holding the state file cannot be created"),
+        "expected the refusal to name the uncreatable directory, got {:?}",
+        err.message()
+    );
+}
+
 macro_rules! invalid_id_case {
     ($name:ident, $bad:expr) => {
         #[test]
@@ -1608,6 +1703,39 @@ fn damage_battery_text_shapes() {
     let third = TestDir::new("damage-text-not-json");
     assert_corrupt_document(&third, b"this is not json");
 }
+#[test]
+fn cli_renders_a_duplicated_key_in_its_escaped_form() {
+    // DM-A22: the duplicated key message was the one error
+    // message in the library that rendered document text
+    // raw. A key the document's escapes decode to a newline
+    // put a second line into the error output, against the
+    // one line discipline; the message now renders the key
+    // through the repr, as every sibling message renders its
+    // values.
+    let dir = TestDir::new("duplicate-key-message");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    std::fs::write(
+        &state,
+        r#"{"format": "deadman-state/1", "a\nb": 1, "a\nb": 2, "runs": []}"#,
+    )
+    .unwrap();
+    let (_, stderr) = run_cli(&["--state", &state_arg, "log", "run-a"], 1);
+    assert_eq!(
+        stderr,
+        "error: the state is corrupt, a key stands twice in the document, 'a\\nb'\n"
+    );
+    std::fs::write(
+        &state,
+        r#"{"format": "deadman-state/1", "format": "deadman-state/1", "runs": []}"#,
+    )
+    .unwrap();
+    let (_, stderr) = run_cli(&["--state", &state_arg, "log", "run-a"], 1);
+    assert_eq!(
+        stderr,
+        "error: the state is corrupt, a key stands twice in the document, 'format'\n"
+    );
+}
 
 /// Replace the reasons array at the given index among the
 /// reasons arrays of a document, counting from 0.
@@ -2399,6 +2527,32 @@ fn cli_error_exits_and_messages() {
         2,
     );
     assert!(stderr.starts_with("error:"), "{stderr}");
+}
+
+#[test]
+fn cli_help_and_parser_errors_share_the_usage_line() {
+    // DM-A47: the help surface and the parser error surface print the
+    // command's usage line, and the two spellings stood duplicated in
+    // the binary until the help text was composed from the one usage
+    // string. This pin drives both surfaces for every command and
+    // compares the usage block each prints, so a divergence between
+    // the spellings, including a dropped composition, fails here.
+    let dir = TestDir::new("cli-usage-line");
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    for command in ["register", "prove", "spend", "pull", "stage", "log"] {
+        let (help, _) = run_cli(&["--state", &state, command, "--help"], 0);
+        let help_usage = help
+            .split("\n\n")
+            .next()
+            .expect("help opens with its usage");
+        let (_, stderr) = run_cli(&["--state", &state, command], 2);
+        let error_line = format!("\narvin {command}: error:");
+        let error_usage = stderr
+            .split(&error_line)
+            .next()
+            .expect("the parser error opens with its usage");
+        assert_eq!(help_usage, error_usage, "command {command}");
+    }
 }
 
 #[test]
@@ -4934,6 +5088,43 @@ fn cli_model_judge_timeout_past_the_widest_duration_refuses_at_exit_2() {
 }
 
 #[test]
+fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_helper() {
+    // The inside edge of the timeout boundary the refusal
+    // pins judge from the outside. The widest whole second
+    // count the duration holds stands accepted by the
+    // surface, and the transport then fails the call on its
+    // checked deadline addition before any helper stands,
+    // the arm DM-21 states, so the helper never runs and
+    // the consultation lands in the call failed class.
+    let dir = TestDir::new("model-cli-timeout-widest");
+    let switch = cli_switch_at_warn(&dir);
+    let marker = dir.path().join("helper-ran.txt");
+    let body = format!(
+        "#!/bin/sh\nprintf '%s' 'ran' > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+        marker.display()
+    );
+    let helper = write_helper(&dir, "judge.sh", &body);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-timeout",
+            "18446744073709551615",
+        ],
+        0,
+    );
+    let record = last_record(&switch);
+    assert_fallback(&stdout, &record, "call failed");
+    assert!(!marker.exists(), "the helper never ran");
+}
+
+#[test]
 fn a_helper_written_from_the_contract_statement_alone_interoperates() {
     // The stranger pin of DM-21. The helper below is written
     // from the obligation's statement alone. It finds the
@@ -5093,4 +5284,71 @@ fn a_bare_fraction_separator_without_a_zone_still_refuses() {
     ] {
         assert!(parse_instant(text).is_none(), "{text}");
     }
+}
+
+/// Run the CLI with stdout redirected to the full device, so
+/// every write the command makes to stdout fails, returning
+/// the exit code and the stderr text. The device is opened
+/// for writing: a read only descriptor's writes are silently
+/// accepted by the standard output layer, so the read only
+/// form would let every command pass and the drive would
+/// prove nothing.
+fn run_cli_stdout_full(args: &[&str]) -> (i32, String) {
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("the full device opens");
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .args(args)
+        .stdout(std::process::Stdio::from(full))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("the binary runs");
+    (
+        output.status.code().expect("the binary exits by code"),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn cli_register_reports_a_failed_output_write() {
+    // DM-A24: the CLI printed through the panicking macros,
+    // so a failed write answered with a panic report at exit
+    // 101, against the module doc's doctrine that no
+    // traceback is ever printed. The checked writer answers
+    // the output error line at exit 1. The mutation itself
+    // has already published when its print fails, which the
+    // closing log read proves.
+    let dir = TestDir::new("print-full-register");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    let (code, stderr) = run_cli_stdout_full(&["--state", &state_arg, "register", "run-a"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
+    let (stdout, _) = run_cli(&["--state", &state_arg, "log", "run-a"], 0);
+    assert!(stdout.contains("registered"), "{stdout}");
+}
+
+#[test]
+fn cli_log_reports_a_failed_output_write() {
+    // DM-A24: the log loop's prints take the same checked
+    // writer, so a failed write mid log answers the same
+    // line at exit 1 rather than a panic.
+    let dir = TestDir::new("print-full-log");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    run_cli(&["--state", &state_arg, "register", "run-a"], 0);
+    let (code, stderr) = run_cli_stdout_full(&["--state", &state_arg, "log", "run-a"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
+}
+
+#[test]
+fn cli_help_reports_a_failed_output_write() {
+    // DM-A24: the help texts print through the same checked
+    // writer, so --help with a dead stdout answers the output
+    // error line at exit 1 rather than panicking.
+    let (code, stderr) = run_cli_stdout_full(&["--help"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
 }

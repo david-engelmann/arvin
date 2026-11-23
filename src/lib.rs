@@ -485,28 +485,45 @@ pub fn py_repr_value(value: &Value) -> String {
     }
 }
 
+/// The digit limit rule of the two integer arms of py_printable,
+/// stated once (DM-A27). An integer whose decimal text, trimmed
+/// of its sign, runs past the digit limit falls back to the
+/// standing phrase, because the Python runtime cannot repr it
+/// either.
+fn printable_int_text(text: String) -> String {
+    if text.trim_start_matches('-').len() > INT_DIGIT_LIMIT {
+        "a value too large to print".to_string()
+    } else {
+        text
+    }
+}
+
 /// Repr a request value for an error message, however large it
 /// stands. An integer whose decimal text runs past the digit
 /// limit cannot be reprised by the Python runtime either, and
 /// both implementations fall back to the same standing phrase.
 pub fn py_printable(value: &Value) -> String {
     match value {
-        Value::Int(number) => {
-            let text = number.to_string();
-            if text.trim_start_matches('-').len() > INT_DIGIT_LIMIT {
-                "a value too large to print".to_string()
-            } else {
-                text
-            }
-        }
-        Value::BigInt(text) => {
-            if text.trim_start_matches('-').len() > INT_DIGIT_LIMIT {
-                "a value too large to print".to_string()
-            } else {
-                text.clone()
-            }
-        }
+        Value::Int(number) => printable_int_text(number.to_string()),
+        Value::BigInt(text) => printable_int_text(text.clone()),
         _ => py_repr_value(value),
+    }
+}
+
+/// The rendering of a judge timeout value for its refusal.
+/// A value standing at or past the whole ceiling renders as
+/// the ceiling itself, the boundary the refusal names,
+/// because the value crossed no surface whole. Every other
+/// value renders as itself.
+pub fn timeout_printable(value: &Value) -> String {
+    let past_ceiling = match value {
+        Value::Int(number) => *number >= 1 && *number as u128 >= TIMEOUT_WHOLE_CEILING,
+        _ => false,
+    };
+    if past_ceiling {
+        TIMEOUT_WHOLE_CEILING.to_string()
+    } else {
+        py_printable(value)
     }
 }
 
@@ -762,8 +779,19 @@ impl Parser {
         text: &str,
         value: Value,
     ) -> std::result::Result<Value, ParseFailure> {
-        if self.chars[self.pos..].starts_with(&text.chars().collect::<Vec<char>>()[..]) {
-            self.pos += text.len();
+        // The literal stands compared character by character
+        // against the input ahead of the cursor, with no
+        // collection built for the comparison. The literals of
+        // this grammar are plain ASCII, so the character count
+        // the comparison advances is the byte count the
+        // position has always advanced by.
+        let matched = text
+            .chars()
+            .zip(self.chars[self.pos..].iter())
+            .take_while(|(want, have)| want == *have)
+            .count();
+        if matched == text.chars().count() {
+            self.pos += matched;
             Ok(value)
         } else {
             Err(self.syntax("a value stands expected here"))
@@ -1554,6 +1582,21 @@ fn parse_stored_instant(value: &Value) -> Result<Instant> {
     }
 }
 
+/// Parse a stored instant field and take the field's text
+/// beside it, the pair the stored readers carry together.
+/// The text extraction cannot fail, and the reason stands
+/// written here at the one seat that performs it:
+/// parse_stored_instant succeeds only on a Str value, so a
+/// parsed instant is text.
+fn parse_stored_instant_text(value: &Value) -> Result<(Instant, String)> {
+    let instant = parse_stored_instant(value)?;
+    let text = value
+        .as_str()
+        .expect("a parsed instant is text")
+        .to_string();
+    Ok((instant, text))
+}
+
 // ----------------------------------------------------------------
 // Value level validation.
 //
@@ -1589,6 +1632,17 @@ pub fn validate_name(value: &Value) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The text of a run id validate_name has already judged,
+/// cloned out of its value. Every entry point performs this
+/// extraction after its validation, so the extraction and
+/// the ground of its unreachable arm stand in one place.
+fn run_id_text(run_id: &Value) -> String {
+    match run_id {
+        Value::Str(text) => text.clone(),
+        _ => unreachable!("a validated name is text"),
+    }
 }
 
 fn validate_stored_name(value: &Value) -> Result<String> {
@@ -1804,25 +1858,68 @@ fn empty_document() -> Document {
     Document { runs: Vec::new() }
 }
 
-fn object_map(value: &Value) -> Option<std::collections::HashMap<&str, &Value>> {
+// The pairs of an object value, read where they stand. The
+// validators walk these pairs directly, in place, where they
+// once built a hash map of the same pairs on every object
+// they validated, one map per record of every state read.
+// The reader refuses a repeated key at parse time, so a
+// first match lookup over the pairs reads the one value the
+// map would have carried, and a shape check over the pairs
+// counts the same keys the map counted.
+fn object_pairs(value: &Value) -> Option<&[(String, Value)]> {
     match value {
-        Value::Object(pairs) => Some(
-            pairs
-                .iter()
-                .map(|(key, item)| (key.as_str(), item))
-                .collect(),
-        ),
+        Value::Object(pairs) => Some(pairs),
         _ => None,
     }
 }
 
-fn keys_match(map: &std::collections::HashMap<&str, &Value>, expected: &[&str]) -> bool {
-    map.len() == expected.len() && expected.iter().all(|key| map.contains_key(key))
+fn keys_match(pairs: &[(String, Value)], expected: &[&str]) -> bool {
+    pairs.len() == expected.len()
+        && expected
+            .iter()
+            .all(|key| pairs.iter().any(|(name, _)| name.as_str() == *key))
 }
 
+// The value of a field the shape check has already passed,
+// so the key stands present exactly once and the first match
+// is the only match.
+fn field<'a>(pairs: &'a [(String, Value)], key: &str) -> &'a Value {
+    pairs
+        .iter()
+        .find(|(name, _)| name.as_str() == key)
+        .map(|(_, item)| item)
+        .expect("a field the shape check has passed")
+}
+
+fn field_opt<'a>(pairs: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
+    pairs
+        .iter()
+        .find(|(name, _)| name.as_str() == key)
+        .map(|(_, item)| item)
+}
+
+/// A stored model unit field of a stage record, null or a
+/// number in the unit interval of DM-17, read for the two
+/// fields that carry one, the confidence and the score, so
+/// the rule and its refusal stand in one place (DM-A43).
+fn stored_model_unit(
+    pairs: &[(String, Value)],
+    field_name: &str,
+    noun: &str,
+) -> Result<Option<f64>> {
+    match field(pairs, field_name) {
+        Value::Null => Ok(None),
+        value => match model_number_unit(value) {
+            Some(number) => Ok(Some(number)),
+            None => Err(corrupt(format!(
+                "a stage record carries a model {noun} outside the range from 0 to 1"
+            ))),
+        },
+    }
+}
 fn validate_record(value: &Value, position: usize) -> Result<Record> {
-    let map = match object_map(value) {
-        Some(map) => map,
+    let pairs = match object_pairs(value) {
+        Some(pairs) => pairs,
         None => {
             return Err(corrupt(
                 "a log record does not carry exactly the recorded fields".to_string(),
@@ -1836,14 +1933,14 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
     // DM-22, and in no other shape. The kind is read before
     // the shape is judged because the extended shapes stand
     // open to stage records alone.
-    let with_ancestry = keys_match(&map, &RECORD_KEYS_ANCESTRY);
-    let extended = with_ancestry || keys_match(&map, &RECORD_KEYS_EXTENDED);
-    if !extended && !keys_match(&map, &RECORD_KEYS) {
+    let with_ancestry = keys_match(pairs, &RECORD_KEYS_ANCESTRY);
+    let extended = with_ancestry || keys_match(pairs, &RECORD_KEYS_EXTENDED);
+    if !extended && !keys_match(pairs, &RECORD_KEYS) {
         return Err(corrupt(
             "a log record does not carry exactly the recorded fields".to_string(),
         ));
     }
-    let seq = map["seq"];
+    let seq = field(pairs, "seq");
     match seq.as_json_int() {
         Some(number) if number.cmp_i128(position as i128 + 1) == Ordering::Equal => {}
         _ => {
@@ -1852,7 +1949,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             ))
         }
     }
-    let kind = match map["kind"] {
+    let kind = match field(pairs, "kind") {
         Value::Str(text) if RECORD_KINDS.contains(&text.as_str()) => text.clone(),
         other => {
             return Err(corrupt(format!(
@@ -1861,12 +1958,8 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             )))
         }
     };
-    let instant = parse_stored_instant(map["at"])?;
-    let at = map["at"]
-        .as_str()
-        .expect("a parsed instant is text")
-        .to_string();
-    let stage = match map["stage"] {
+    let (instant, at) = parse_stored_instant_text(field(pairs, "at"))?;
+    let stage = match field(pairs, "stage") {
         Value::Str(text) if STAGES.contains(&text.as_str()) => text.clone(),
         other => {
             return Err(corrupt(format!(
@@ -1875,7 +1968,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             )))
         }
     };
-    let reasons: Vec<String> = match map["reasons"] {
+    let reasons: Vec<String> = match field(pairs, "reasons") {
         Value::Array(items) => {
             let mut reasons = Vec::new();
             for item in items {
@@ -1912,7 +2005,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                      stand only on a stage record"
                 )));
             }
-            let model_name = match map["model_name"] {
+            let model_name = match field(pairs, "model_name") {
                 Value::Null => None,
                 Value::Str(text) if model_name_shape_ok(text) => Some(text.clone()),
                 _ => {
@@ -1923,7 +2016,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     ))
                 }
             };
-            let model_verdict = match map["model_verdict"] {
+            let model_verdict = match field(pairs, "model_verdict") {
                 Value::Null => None,
                 Value::Str(text) if VERDICT_LABELS.contains(&text.as_str()) => Some(text.clone()),
                 _ => {
@@ -1934,33 +2027,9 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     ))
                 }
             };
-            let model_confidence = match map["model_confidence"] {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model confidence outside \
-                             the range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
-            let model_score = match map["model_score"] {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model score outside the \
-                             range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
-            let fallback_taken = match map["fallback_taken"] {
+            let model_confidence = stored_model_unit(pairs, "model_confidence", "confidence")?;
+            let model_score = stored_model_unit(pairs, "model_score", "score")?;
+            let fallback_taken = match field(pairs, "fallback_taken") {
                 Value::Null => None,
                 Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
                 _ => {
@@ -1972,7 +2041,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                 }
             };
             let model_ancestry = if with_ancestry {
-                match map["model_ancestry"] {
+                match field(pairs, "model_ancestry") {
                     Value::Null => None,
                     Value::Str(text) if text == ANCESTRY_BELOW_BAR => Some(text.clone()),
                     _ => {
@@ -2025,10 +2094,10 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                 model_ancestry,
             )
         } else {
-            for field in RESERVED_FIELDS {
-                if !matches!(map[field], Value::Null) {
+            for name in RESERVED_FIELDS {
+                if !matches!(field(pairs, name), Value::Null) {
                     return Err(corrupt(format!(
-                        "a log record carries a value in the reserved field {field}"
+                        "a log record carries a value in the reserved field {name}"
                     )));
                 }
             }
@@ -2609,12 +2678,8 @@ fn validate_stage_record_against_warrant(
     Ok(())
 }
 
-fn validate_stored_ceiling(
-    map: &std::collections::HashMap<&str, &Value>,
-    field: &str,
-    id: &str,
-) -> Result<Option<i64>> {
-    match map[field] {
+fn validate_stored_ceiling(pairs: &[(String, Value)], name: &str, id: &str) -> Result<Option<i64>> {
+    match field(pairs, name) {
         Value::Null => Ok(None),
         value => match value.as_json_int() {
             Some(number)
@@ -2624,7 +2689,7 @@ fn validate_stored_ceiling(
                 Ok(Some(json_int_as_i64(&number)))
             }
             _ => Err(corrupt(format!(
-                "run {} holds an invalid {field}",
+                "run {} holds an invalid {name}",
                 py_repr_str(id)
             ))),
         },
@@ -2635,22 +2700,21 @@ fn validate_run(value: &Value) -> Result<Run> {
     // A run carries exactly the landed twelve keys or, while
     // a certification of DM-23 stands unconsumed, the same
     // keys plus streak_ancestry, and no third key set stands.
-    let map = match object_map(value) {
-        Some(map) if keys_match(&map, &RUN_KEYS) || keys_match(&map, &RUN_KEYS_WITH_CARRY) => map,
+    let pairs = match object_pairs(value) {
+        Some(pairs) if keys_match(pairs, &RUN_KEYS) || keys_match(pairs, &RUN_KEYS_WITH_CARRY) => {
+            pairs
+        }
         _ => {
             return Err(corrupt(
                 "a run does not carry exactly the recorded fields".to_string(),
             ))
         }
     };
-    let id = validate_stored_name(map["id"])?;
+    let id = validate_stored_name(field(pairs, "id"))?;
     let id_repr = py_repr_str(&id);
-    let registered_instant = parse_stored_instant(map["registered_at"])?;
-    let registered_at = map["registered_at"]
-        .as_str()
-        .expect("a parsed instant is text")
-        .to_string();
-    let proof_interval_seconds = match map["proof_interval_seconds"].as_json_int() {
+    let (registered_instant, registered_at) =
+        parse_stored_instant_text(field(pairs, "registered_at"))?;
+    let proof_interval_seconds = match field(pairs, "proof_interval_seconds").as_json_int() {
         Some(number) if number.cmp_i128(1) != Ordering::Less => number,
         _ => {
             return Err(corrupt(format!(
@@ -2658,7 +2722,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let missed_proof_limit = match map["missed_proof_limit"].as_json_int() {
+    let missed_proof_limit = match field(pairs, "missed_proof_limit").as_json_int() {
         Some(number)
             if number.cmp_i128(1) != Ordering::Less
                 && number.cmp_i128(MISSED_PROOF_LIMIT_MAX as i128) != Ordering::Greater =>
@@ -2671,8 +2735,8 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let soft_ceiling = validate_stored_ceiling(&map, "soft_ceiling", &id)?;
-    let hard_ceiling = validate_stored_ceiling(&map, "hard_ceiling", &id)?;
+    let soft_ceiling = validate_stored_ceiling(pairs, "soft_ceiling", &id)?;
+    let hard_ceiling = validate_stored_ceiling(pairs, "hard_ceiling", &id)?;
     if let (Some(soft), Some(hard)) = (soft_ceiling, hard_ceiling) {
         if soft > hard {
             return Err(corrupt(format!(
@@ -2680,7 +2744,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )));
         }
     }
-    let spend_total = match map["spend_total"].as_json_int() {
+    let spend_total = match field(pairs, "spend_total").as_json_int() {
         Some(number)
             if number.cmp_i128(0) != Ordering::Less
                 && number.cmp_i128(SPEND_MAX as i128) != Ordering::Greater =>
@@ -2693,22 +2757,14 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let (last_proof_at, last_proof_instant) = match map["last_proof_at"] {
+    let (last_proof_at, last_proof_instant) = match field(pairs, "last_proof_at") {
         Value::Null => (None, None),
         value => {
-            let instant = parse_stored_instant(value)?;
-            (
-                Some(
-                    value
-                        .as_str()
-                        .expect("a parsed instant is text")
-                        .to_string(),
-                ),
-                Some(instant),
-            )
+            let (instant, text) = parse_stored_instant_text(value)?;
+            (Some(text), Some(instant))
         }
     };
-    let stage = match map["stage"] {
+    let stage = match field(pairs, "stage") {
         Value::Str(text) if STAGES.contains(&text.as_str()) => text.clone(),
         other => {
             return Err(corrupt(format!(
@@ -2717,7 +2773,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let clear_streak = match map["clear_streak"].as_json_int() {
+    let clear_streak = match field(pairs, "clear_streak").as_json_int() {
         Some(number) if number.cmp_i128(0) != Ordering::Less => number,
         _ => {
             return Err(corrupt(format!(
@@ -2725,7 +2781,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let killed = match map["killed"] {
+    let killed = match field(pairs, "killed") {
         Value::Bool(flag) => *flag,
         _ => {
             return Err(corrupt(format!(
@@ -2744,7 +2800,7 @@ fn validate_run(value: &Value) -> Result<Run> {
     // the writer sets it only at a middle stage and clears it
     // on every act that ends or leaves the stage history it
     // belongs to.
-    let streak_ancestry = match map.get("streak_ancestry") {
+    let streak_ancestry = match field_opt(pairs, "streak_ancestry") {
         None => false,
         Some(Value::Bool(true)) if matches!(stage.as_str(), "warn" | "throttle" | "cut tools") => {
             true
@@ -2761,7 +2817,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let log: Vec<Record> = match map["log"] {
+    let log: Vec<Record> = match field(pairs, "log") {
         Value::Array(items) if !items.is_empty() => {
             let mut records = Vec::new();
             for (position, item) in items.iter().enumerate() {
@@ -2814,15 +2870,15 @@ fn validate_run(value: &Value) -> Result<Run> {
 }
 
 fn validate_document(value: &Value) -> Result<Document> {
-    let map = match object_map(value) {
-        Some(map) if keys_match(&map, &DOCUMENT_KEYS) => map,
+    let pairs = match object_pairs(value) {
+        Some(pairs) if keys_match(pairs, &DOCUMENT_KEYS) => pairs,
         _ => {
             return Err(corrupt(
                 "the document does not carry exactly the recorded fields".to_string(),
             ))
         }
     };
-    match map["format"] {
+    match field(pairs, "format") {
         Value::Str(text) if text == FORMAT_NAME => {}
         other => {
             return Err(corrupt(format!(
@@ -2832,7 +2888,7 @@ fn validate_document(value: &Value) -> Result<Document> {
             )))
         }
     }
-    let items = match map["runs"] {
+    let items = match field(pairs, "runs") {
         Value::Array(items) => items,
         _ => return Err(corrupt("the runs field is not a list".to_string())),
     };
@@ -2867,142 +2923,277 @@ fn json_int_value(number: &JsonInt) -> Value {
     }
 }
 
-fn document_to_value(document: &Document) -> Value {
-    let runs: Vec<Value> = document
-        .runs
-        .iter()
-        .map(|run| {
-            let records: Vec<Value> = run
-                .log
-                .iter()
-                .map(|record| {
-                    let mut pairs: Vec<(String, Value)> = vec![
-                        ("seq".to_string(), Value::Int(record.seq as i128)),
-                        ("kind".to_string(), Value::Str(record.kind.clone())),
-                        ("at".to_string(), Value::Str(record.at.clone())),
-                        ("stage".to_string(), Value::Str(record.stage.clone())),
-                        (
-                            "reasons".to_string(),
-                            Value::Array(
-                                record
-                                    .reasons
-                                    .iter()
-                                    .map(|reason| Value::Str(reason.clone()))
-                                    .collect(),
-                            ),
-                        ),
-                        (
-                            "model_name".to_string(),
-                            record.model_name.clone().map_or(Value::Null, Value::Str),
-                        ),
-                        (
-                            "model_confidence".to_string(),
-                            record.model_confidence.map_or(Value::Null, Value::Float),
-                        ),
-                        (
-                            "fallback_taken".to_string(),
-                            record
-                                .fallback_taken
-                                .clone()
-                                .map_or(Value::Null, Value::Str),
-                        ),
-                    ];
-                    // The extended shape stands only on a stage
-                    // record that carries a consultation, judged
-                    // by any of its five model fields standing
-                    // populated, because a consultation record
-                    // always carries its model name, or that
-                    // carries the ancestry pattern of DM-22.
-                    // From the Round 7 amendment the writer
-                    // writes that shape in its eleven key form
-                    // uniformly, the ancestry field appended
-                    // last at null on a consultation record and
-                    // at its literal on an ancestry step down,
-                    // and the ten key shape for no record.
-                    if record.kind == "stage"
-                        && (record.model_name.is_some() || record.model_ancestry.is_some())
-                    {
-                        pairs.push((
-                            "model_verdict".to_string(),
-                            record.model_verdict.clone().map_or(Value::Null, Value::Str),
-                        ));
-                        pairs.push((
-                            "model_score".to_string(),
-                            record.model_score.map_or(Value::Null, Value::Float),
-                        ));
-                        pairs.push((
-                            "model_ancestry".to_string(),
-                            record
-                                .model_ancestry
-                                .clone()
-                                .map_or(Value::Null, Value::Str),
-                        ));
-                    }
-                    Value::Object(pairs)
-                })
-                .collect();
-            let mut run_pairs: Vec<(String, Value)> = vec![
-                ("id".to_string(), Value::Str(run.id.clone())),
-                (
-                    "registered_at".to_string(),
-                    Value::Str(run.registered_at.clone()),
-                ),
-                (
-                    "proof_interval_seconds".to_string(),
-                    json_int_value(&run.proof_interval_seconds),
-                ),
-                (
-                    "missed_proof_limit".to_string(),
-                    Value::Int(run.missed_proof_limit as i128),
-                ),
-                (
-                    "soft_ceiling".to_string(),
-                    run.soft_ceiling
-                        .map_or(Value::Null, |v| Value::Int(v as i128)),
-                ),
-                (
-                    "hard_ceiling".to_string(),
-                    run.hard_ceiling
-                        .map_or(Value::Null, |v| Value::Int(v as i128)),
-                ),
-                (
-                    "spend_total".to_string(),
-                    Value::Int(run.spend_total as i128),
-                ),
-                (
-                    "last_proof_at".to_string(),
-                    run.last_proof_at.clone().map_or(Value::Null, Value::Str),
-                ),
-                ("stage".to_string(), Value::Str(run.stage.clone())),
-                (
-                    "clear_streak".to_string(),
-                    json_int_value(&run.clear_streak),
-                ),
-                ("killed".to_string(), Value::Bool(run.killed)),
-            ];
-            // The standing certification of DM-23 renders
-            // only while it stands, after killed and before
-            // log, so a run carrying no standing certification
-            // renders byte for byte as the landed writer
-            // renders it.
-            if run.streak_ancestry {
-                run_pairs.push(("streak_ancestry".to_string(), Value::Bool(true)));
+// The document stands dumped from its typed shape, field by
+// field in the construction order the writer has always
+// used, through the same leaf renderers the value dump
+// uses, so a publish builds no second value tree of the
+// whole document, cloning every string it carries, only to
+// walk that tree back into text. The bytes stand identical
+// to the tree form's bytes, laid out by the same rules the
+// value dump lays a value out by, and the fixture
+// production replay and the writer's golden pins compare
+// them byte for byte.
+
+fn dump_document(document: &Document, out: &mut String) {
+    out.push_str("{\n");
+    out.push_str("  ");
+    dump_json_string("format", out);
+    out.push_str(": ");
+    dump_json_string(FORMAT_NAME, out);
+    out.push_str(",\n");
+    out.push_str("  ");
+    dump_json_string("runs", out);
+    out.push_str(": ");
+    if document.runs.is_empty() {
+        out.push_str("[]");
+    } else {
+        out.push_str("[\n");
+        for (index, run) in document.runs.iter().enumerate() {
+            out.push_str(&"  ".repeat(2));
+            dump_run(run, 2, out);
+            if index + 1 < document.runs.len() {
+                out.push(',');
             }
-            run_pairs.push(("log".to_string(), Value::Array(records)));
-            Value::Object(run_pairs)
-        })
-        .collect();
-    Value::Object(vec![
-        ("format".to_string(), Value::Str(FORMAT_NAME.to_string())),
-        ("runs".to_string(), Value::Array(runs)),
-    ])
+            out.push('\n');
+        }
+        out.push_str("  ");
+        out.push(']');
+    }
+    out.push('\n');
+    out.push('}');
+}
+
+fn dump_run(run: &Run, level: usize, out: &mut String) {
+    out.push_str("{\n");
+    let inner = level + 1;
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("id", out);
+    out.push_str(": ");
+    dump_json_string(&run.id, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("registered_at", out);
+    out.push_str(": ");
+    dump_json_string(&run.registered_at, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("proof_interval_seconds", out);
+    out.push_str(": ");
+    dump_json_int(&run.proof_interval_seconds, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("missed_proof_limit", out);
+    out.push_str(": ");
+    out.push_str(&(run.missed_proof_limit as i128).to_string());
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("soft_ceiling", out);
+    out.push_str(": ");
+    dump_opt_int(run.soft_ceiling, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("hard_ceiling", out);
+    out.push_str(": ");
+    dump_opt_int(run.hard_ceiling, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("spend_total", out);
+    out.push_str(": ");
+    out.push_str(&(run.spend_total as i128).to_string());
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("last_proof_at", out);
+    out.push_str(": ");
+    dump_opt_str(&run.last_proof_at, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("stage", out);
+    out.push_str(": ");
+    dump_json_string(&run.stage, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("clear_streak", out);
+    out.push_str(": ");
+    dump_json_int(&run.clear_streak, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("killed", out);
+    out.push_str(": ");
+    out.push_str(if run.killed { "true" } else { "false" });
+    // The standing certification of DM-23 renders
+    // only while it stands, after killed and before
+    // log, so a run carrying no standing certification
+    // renders byte for byte as the landed writer
+    // renders it.
+    if run.streak_ancestry {
+        out.push_str(",\n");
+        out.push_str(&"  ".repeat(inner));
+        dump_json_string("streak_ancestry", out);
+        out.push_str(": ");
+        out.push_str("true");
+    }
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("log", out);
+    out.push_str(": ");
+    dump_records(&run.log, inner, out);
+    out.push('\n');
+    out.push_str(&"  ".repeat(level));
+    out.push('}');
+}
+
+fn dump_records(records: &[Record], level: usize, out: &mut String) {
+    if records.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+    out.push_str("[\n");
+    for (index, record) in records.iter().enumerate() {
+        out.push_str(&"  ".repeat(level + 1));
+        dump_record(record, level + 1, out);
+        if index + 1 < records.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&"  ".repeat(level));
+    out.push(']');
+}
+
+fn dump_record(record: &Record, level: usize, out: &mut String) {
+    out.push_str("{\n");
+    let inner = level + 1;
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("seq", out);
+    out.push_str(": ");
+    out.push_str(&(record.seq as i128).to_string());
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("kind", out);
+    out.push_str(": ");
+    dump_json_string(&record.kind, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("at", out);
+    out.push_str(": ");
+    dump_json_string(&record.at, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("stage", out);
+    out.push_str(": ");
+    dump_json_string(&record.stage, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("reasons", out);
+    out.push_str(": ");
+    dump_reasons(&record.reasons, inner, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("model_name", out);
+    out.push_str(": ");
+    dump_opt_str(&record.model_name, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("model_confidence", out);
+    out.push_str(": ");
+    dump_opt_float(&record.model_confidence, out);
+    out.push_str(",\n");
+    out.push_str(&"  ".repeat(inner));
+    dump_json_string("fallback_taken", out);
+    out.push_str(": ");
+    dump_opt_str(&record.fallback_taken, out);
+    // The extended shape stands written only on a stage
+    // record that carries a consultation, judged by any of
+    // its five model fields standing populated, because a
+    // consultation record always carries its model name, or
+    // that carries the ancestry pattern of DM-22. From the
+    // Round 7 amendment the writer writes that shape in its
+    // eleven key form uniformly, the ancestry field appended
+    // last at null on a consultation record and at its
+    // literal on an ancestry step down, and the ten key
+    // shape for no record.
+    if record.kind == "stage" && (record.model_name.is_some() || record.model_ancestry.is_some()) {
+        out.push_str(",\n");
+        out.push_str(&"  ".repeat(inner));
+        dump_json_string("model_verdict", out);
+        out.push_str(": ");
+        dump_opt_str(&record.model_verdict, out);
+        out.push_str(",\n");
+        out.push_str(&"  ".repeat(inner));
+        dump_json_string("model_score", out);
+        out.push_str(": ");
+        dump_opt_float(&record.model_score, out);
+        out.push_str(",\n");
+        out.push_str(&"  ".repeat(inner));
+        dump_json_string("model_ancestry", out);
+        out.push_str(": ");
+        dump_opt_str(&record.model_ancestry, out);
+    }
+    out.push('\n');
+    out.push_str(&"  ".repeat(level));
+    out.push('}');
+}
+
+fn dump_reasons(reasons: &[String], level: usize, out: &mut String) {
+    if reasons.is_empty() {
+        out.push_str("[]");
+        return;
+    }
+    out.push_str("[\n");
+    for (index, reason) in reasons.iter().enumerate() {
+        out.push_str(&"  ".repeat(level + 1));
+        dump_json_string(reason, out);
+        if index + 1 < reasons.len() {
+            out.push(',');
+        }
+        out.push('\n');
+    }
+    out.push_str(&"  ".repeat(level));
+    out.push(']');
+}
+
+fn dump_json_int(number: &JsonInt, out: &mut String) {
+    match number {
+        JsonInt::Small(value) => out.push_str(&value.to_string()),
+        JsonInt::Big(text) => out.push_str(text),
+    }
+}
+
+fn dump_opt_str(value: &Option<String>, out: &mut String) {
+    match value {
+        Some(text) => dump_json_string(text, out),
+        None => out.push_str("null"),
+    }
+}
+
+fn dump_opt_float(value: &Option<f64>, out: &mut String) {
+    match value {
+        Some(number) => out.push_str(&py_float_repr(*number)),
+        None => out.push_str("null"),
+    }
+}
+
+fn dump_opt_int(value: Option<i64>, out: &mut String) {
+    match value {
+        Some(number) => out.push_str(&(number as i128).to_string()),
+        None => out.push_str("null"),
+    }
 }
 
 fn write_document(document: &Document) -> String {
     let mut out = String::new();
-    dump_value(&document_to_value(document), 0, &mut out);
+    dump_document(document, &mut out);
     out.push('\n');
     out
+}
+
+// The indent of one level stands pushed unit by unit, so a
+// dump builds no throwaway string for every element and
+// closing bracket it writes.
+fn push_indent(out: &mut String, level: usize) {
+    for _ in 0..level {
+        out.push_str("  ");
+    }
 }
 
 fn dump_value(value: &Value, level: usize, out: &mut String) {
@@ -3021,14 +3212,14 @@ fn dump_value(value: &Value, level: usize, out: &mut String) {
             }
             out.push_str("[\n");
             for (index, item) in items.iter().enumerate() {
-                out.push_str(&"  ".repeat(level + 1));
+                push_indent(out, level + 1);
                 dump_value(item, level + 1, out);
                 if index + 1 < items.len() {
                     out.push(',');
                 }
                 out.push('\n');
             }
-            out.push_str(&"  ".repeat(level));
+            push_indent(out, level);
             out.push(']');
         }
         Value::Object(pairs) => {
@@ -3038,7 +3229,7 @@ fn dump_value(value: &Value, level: usize, out: &mut String) {
             }
             out.push_str("{\n");
             for (index, (key, item)) in pairs.iter().enumerate() {
-                out.push_str(&"  ".repeat(level + 1));
+                push_indent(out, level + 1);
                 dump_json_string(key, out);
                 out.push_str(": ");
                 dump_value(item, level + 1, out);
@@ -3047,7 +3238,7 @@ fn dump_value(value: &Value, level: usize, out: &mut String) {
                 }
                 out.push('\n');
             }
-            out.push_str(&"  ".repeat(level));
+            push_indent(out, level);
             out.push('}');
         }
     }
@@ -3153,13 +3344,8 @@ fn warrant(run: &Run, now: &Instant) -> Result<(usize, Vec<&'static str>)> {
     let missed = missed_proofs(run, now)?;
     if missed >= 1 {
         reasons.push("missed proofs");
-        if missed >= run.missed_proof_limit as i128 {
-            index = index.max(stage_index("kill"));
-        } else {
-            let warranted = MISSED_COUNT_STAGES[(missed.min(4) - 1) as usize];
-            index = index.max(stage_index(warranted));
-        }
     }
+    index = index.max(missed_warrant_index(missed, run.missed_proof_limit));
     Ok((index, reasons))
 }
 
@@ -3651,40 +3837,40 @@ pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
         Ok(value) => value,
         Err(_) => return Consultation::MalformedReply,
     };
-    let map = match object_map(&value) {
-        Some(map) => map,
+    let pairs = match object_pairs(&value) {
+        Some(pairs) => pairs,
         None => return Consultation::MalformedReply,
     };
-    let model_name = match map.get("model") {
+    let model_name = match field_opt(pairs, "model") {
         Some(Value::Str(text)) => (*text).clone(),
         _ => return Consultation::MalformedReply,
     };
     if model_name != pinned {
         return Consultation::MalformedReply;
     }
-    let choice = match map.get("choice") {
-        Some(value) => match object_map(value) {
-            Some(map) => map,
+    let choice = match field_opt(pairs, "choice") {
+        Some(value) => match object_pairs(value) {
+            Some(pairs) => pairs,
             None => return Consultation::MalformedReply,
         },
         None => return Consultation::MalformedReply,
     };
-    let verdict = match choice.get("label") {
+    let verdict = match field_opt(choice, "label") {
         Some(Value::Null) => {
             // An abstention is a well formed reply that
             // reports no decision under DM-16, so a confidence
             // or a score standing outside its declared range
             // makes the reply malformed even here, where no
             // verdict stands to carry them.
-            if let Some(value) = choice.get("confidence") {
+            if let Some(value) = field_opt(choice, "confidence") {
                 if model_number_unit(value).is_none() {
                     return Consultation::MalformedReply;
                 }
             }
-            if let Some(value) = map.get("score") {
-                let level_ok = match object_map(value) {
-                    Some(score_map) => matches!(
-                        score_map.get("level"),
+            if let Some(value) = field_opt(pairs, "score") {
+                let level_ok = match object_pairs(value) {
+                    Some(score_pairs) => matches!(
+                        field_opt(score_pairs, "level"),
                         Some(Value::Int(level)) if (1..=10).contains(level)
                     ),
                     None => false,
@@ -3701,21 +3887,21 @@ pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
         },
         _ => return Consultation::MalformedReply,
     };
-    let confidence = match choice.get("confidence") {
+    let confidence = match field_opt(choice, "confidence") {
         Some(value) => match model_number_unit(value) {
             Some(number) => number,
             None => return Consultation::MalformedReply,
         },
         None => return Consultation::MalformedReply,
     };
-    let score_map = match map.get("score") {
-        Some(value) => match object_map(value) {
-            Some(map) => map,
+    let score_pairs = match field_opt(pairs, "score") {
+        Some(value) => match object_pairs(value) {
+            Some(pairs) => pairs,
             None => return Consultation::MalformedReply,
         },
         None => return Consultation::MalformedReply,
     };
-    let level = match score_map.get("level") {
+    let level = match field_opt(score_pairs, "level") {
         Some(Value::Int(level)) if (1..=10).contains(level) => *level,
         _ => return Consultation::MalformedReply,
     };
@@ -3725,6 +3911,44 @@ pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
         confidence,
         score: (level - 1) as f64 / 9.0,
     }
+}
+
+/// The judge form discipline of the model surface, stated
+/// once here because both surfaces enforce it, the command
+/// line in its stage command and the binding in its
+/// stage_with_model call. Exactly one of the judge and
+/// fixture forms may stand named on one call, and a judge
+/// argument or a judge timeout named with no judge program
+/// to carry it refuses. Each surface computes its own named
+/// predicates, the command line's repeatable judge argument
+/// counting as named where its list stands nonempty and the
+/// binding's where its argument stands present, and crosses
+/// the refusal this function returns in its own discipline
+/// (DM-A42).
+pub fn validate_judge_form(
+    judge_named: bool,
+    fixture_named: bool,
+    judge_argument_named: bool,
+    judge_timeout_named: bool,
+) -> Result<()> {
+    if judge_named && fixture_named {
+        return Err(Error::InvalidRequest(
+            "exactly one judge form may stand named on one call".to_string(),
+        ));
+    }
+    if !judge_named {
+        if judge_argument_named {
+            return Err(Error::InvalidRequest(
+                "a judge argument stands named with no judge program to carry it".to_string(),
+            ));
+        }
+        if judge_timeout_named {
+            return Err(Error::InvalidRequest(
+                "a judge timeout stands named with no judge program to carry it".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The widest reply body the subprocess transport will read.
@@ -4059,9 +4283,10 @@ impl Switch {
             Err(err) => return Err(corrupt(format!("the state file cannot be read, {err}"))),
         };
         let value = parse_document(&raw).map_err(|failure| match failure {
-            ParseFailure::DuplicateKey(key) => {
-                corrupt(format!("a key stands twice in the document, {key}"))
-            }
+            ParseFailure::DuplicateKey(key) => corrupt(format!(
+                "a key stands twice in the document, {}",
+                py_repr_str(&key)
+            )),
             ParseFailure::Syntax(detail) => {
                 corrupt(format!("the document does not parse, {detail}"))
             }
@@ -4279,10 +4504,7 @@ impl Switch {
                 ));
             }
         }
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.mutate(now, |document| {
             if document.runs.iter().any(|run| run.id == run_id) {
                 return Err(Error::Refusal(format!(
@@ -4318,10 +4540,7 @@ impl Switch {
     pub fn prove(&self, run_id: &Value, note: &Value, now: &Instant) -> Result<()> {
         validate_name(run_id)?;
         validate_note(note)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.mutate(now, |document| {
             let index = Self::require_run(document, &run_id)?;
             let run = &mut document.runs[index];
@@ -4344,10 +4563,7 @@ impl Switch {
     pub fn spend(&self, run_id: &Value, amount: &Value, now: &Instant) -> Result<i64> {
         validate_name(run_id)?;
         let amount = validate_spend_amount(amount)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.mutate(now, |document| {
             let index = Self::require_run(document, &run_id)?;
             let run = &mut document.runs[index];
@@ -4372,10 +4588,7 @@ impl Switch {
     pub fn pull(&self, run_id: &Value, now: &Instant) -> Result<String> {
         validate_name(run_id)?;
         validate_now(now)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.ensure_parent()?;
         let guard = self.locked(true)?;
         let mut document = self.read_document()?;
@@ -4452,10 +4665,7 @@ impl Switch {
     ) -> Result<StageReport> {
         validate_name(run_id)?;
         validate_now(now)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.ensure_parent()?;
         let guard = self.locked(true)?;
         let mut document = self.read_document()?;
@@ -4674,10 +4884,7 @@ impl Switch {
     /// Return the recorded decision log of one run, in order.
     pub fn log(&self, run_id: &Value) -> Result<Vec<Record>> {
         validate_name(run_id)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.read(|document| {
             let index = Self::require_run(document, &run_id)?;
             Ok(document.runs[index].log.clone())
