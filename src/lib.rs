@@ -1898,6 +1898,26 @@ fn field_opt<'a>(pairs: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
         .map(|(_, item)| item)
 }
 
+
+/// A stored model unit field of a stage record, null or a
+/// number in the unit interval of DM-17, read for the two
+/// fields that carry one, the confidence and the score, so
+/// the rule and its refusal stand in one place (DM-A43).
+fn stored_model_unit(
+    pairs: &[(String, Value)],
+    field_name: &str,
+    noun: &str,
+) -> Result<Option<f64>> {
+    match field(pairs, field_name) {
+        Value::Null => Ok(None),
+        value => match model_number_unit(value) {
+            Some(number) => Ok(Some(number)),
+            None => Err(corrupt(format!(
+                "a stage record carries a model {noun} outside the range from 0 to 1"
+            ))),
+        },
+    }
+}
 fn validate_record(value: &Value, position: usize) -> Result<Record> {
     let pairs = match object_pairs(value) {
         Some(pairs) => pairs,
@@ -2008,32 +2028,8 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     ))
                 }
             };
-            let model_confidence = match field(pairs, "model_confidence") {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model confidence outside \
-                             the range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
-            let model_score = match field(pairs, "model_score") {
-                Value::Null => None,
-                value => match model_number_unit(value) {
-                    Some(number) => Some(number),
-                    None => {
-                        return Err(corrupt(
-                            "a stage record carries a model score outside the \
-                             range from 0 to 1"
-                                .to_string(),
-                        ))
-                    }
-                },
-            };
+            let model_confidence = stored_model_unit(pairs, "model_confidence", "confidence")?;
+            let model_score = stored_model_unit(pairs, "model_score", "score")?;
             let fallback_taken = match field(pairs, "fallback_taken") {
                 Value::Null => None,
                 Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
