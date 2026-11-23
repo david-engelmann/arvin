@@ -485,27 +485,27 @@ pub fn py_repr_value(value: &Value) -> String {
     }
 }
 
+/// The digit limit rule of the two integer arms of py_printable,
+/// stated once (DM-A27). An integer whose decimal text, trimmed
+/// of its sign, runs past the digit limit falls back to the
+/// standing phrase, because the Python runtime cannot repr it
+/// either.
+fn printable_int_text(text: String) -> String {
+    if text.trim_start_matches('-').len() > INT_DIGIT_LIMIT {
+        "a value too large to print".to_string()
+    } else {
+        text
+    }
+}
+
 /// Repr a request value for an error message, however large it
 /// stands. An integer whose decimal text runs past the digit
 /// limit cannot be reprised by the Python runtime either, and
 /// both implementations fall back to the same standing phrase.
 pub fn py_printable(value: &Value) -> String {
     match value {
-        Value::Int(number) => {
-            let text = number.to_string();
-            if text.trim_start_matches('-').len() > INT_DIGIT_LIMIT {
-                "a value too large to print".to_string()
-            } else {
-                text
-            }
-        }
-        Value::BigInt(text) => {
-            if text.trim_start_matches('-').len() > INT_DIGIT_LIMIT {
-                "a value too large to print".to_string()
-            } else {
-                text.clone()
-            }
-        }
+        Value::Int(number) => printable_int_text(number.to_string()),
+        Value::BigInt(text) => printable_int_text(text.clone()),
         _ => py_repr_value(value),
     }
 }
