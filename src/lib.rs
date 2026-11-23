@@ -1898,7 +1898,6 @@ fn field_opt<'a>(pairs: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
         .map(|(_, item)| item)
 }
 
-
 /// A stored model unit field of a stage record, null or a
 /// number in the unit interval of DM-17, read for the two
 /// fields that carry one, the confidence and the score, so
