@@ -16,14 +16,15 @@
 //! whitespace families of the Python int grammar, probed against
 //! the Python runtime before the port was written.
 
+use std::io::Write;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use arvin::{
-    consultation_from_reply_body, py_float_repr, py_printable, py_repr_str, Error,
-    FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
+    consultation_from_reply_body, py_float_repr, py_printable, py_repr_str, validate_judge_form,
+    Error, FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
     DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
     MODEL_NAME, TIMEOUT_WHOLE_CEILING,
 };
@@ -68,27 +69,28 @@ fn sub_usage(command: &str) -> &'static str {
     }
 }
 
-fn sub_help(command: &str) -> &'static str {
-    match command {
+fn sub_help(command: &str) -> String {
+    let body = match command {
         "register" => {
-            "usage: arvin register [-h] [--proof-interval PROOF_INTERVAL]\n                        [--missed-limit MISSED_LIMIT]\n                        [--soft-ceiling SOFT_CEILING]\n                        [--hard-ceiling HARD_CEILING]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
         }
         "prove" => {
-            "usage: arvin prove [-h] [--note NOTE] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
         }
         "spend" => {
-            "usage: arvin spend [-h] --amount AMOUNT run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
         }
         "pull" => {
-            "usage: arvin pull [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
         "stage" => {
-            "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--host-context HOST_CONTEXT]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
         }
         _ => {
-            "usage: arvin log [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
-    }
+    };
+    format!("{}\n\n{}", sub_usage(command), body)
 }
 
 fn value_options(command: &str) -> &'static [&'static str] {
@@ -145,9 +147,37 @@ fn parser_error(usage: &'static str, prog: &str, message: String) -> ParserError
     }
 }
 
+/// Write one line to stderr, fallibly (DM-A24). The result
+/// is ignored on purpose: the reporters of failure must not
+/// themselves panic when stderr also fails, and the exit
+/// code carries the failure either way.
+fn eprint_line(text: &str) {
+    let stderr = std::io::stderr();
+    let mut lock = stderr.lock();
+    let _ = writeln!(lock, "{text}");
+}
+
+/// Write one line of command output to stdout, checked
+/// (DM-A24). A failed write, a broken pipe or a full device,
+/// answers the output error line on stderr and exits 1,
+/// where the panicking print macros answered with a panic
+/// report at exit 101, against this module's doctrine that
+/// no traceback is ever printed. Where the command was a
+/// mutation, the mutation has already published when its
+/// print fails; the failure stands in the reporting, and
+/// the message names the output, not the command.
+fn print_line(text: &str) {
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    if writeln!(lock, "{text}").is_err() || lock.flush().is_err() {
+        eprint_line("error: the command's output could not be written");
+        std::process::exit(1);
+    }
+}
+
 fn parser_fail(usage: &str, prog: &str, message: &str) -> ExitCode {
-    eprintln!("{usage}");
-    eprintln!("{prog}: error: {message}");
+    eprint_line(usage);
+    eprint_line(&format!("{prog}: error: {message}"));
     ExitCode::from(2)
 }
 
@@ -407,7 +437,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                 || token == "--help"
                 || (token.starts_with("-h") && !token.starts_with("--")))
         {
-            println!("{}", sub_help(command));
+            print_line(&sub_help(command));
             std::process::exit(0);
         }
         if !after_separator && token.starts_with("--") && token.len() > 2 {
@@ -427,7 +457,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                             ),
                         ));
                     }
-                    println!("{}", sub_help(command));
+                    print_line(&sub_help(command));
                     std::process::exit(0);
                 }
                 Ok(Some(option)) => {
@@ -499,48 +529,48 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
     Ok(result)
 }
 
+/// The values recorded under one option name, in the order
+/// the caller named them. The option readers state their
+/// direction and their projection over this one scan, so the
+/// name matching stands in one place.
+fn option_values<'a>(args: &'a SubArgs, name: &str) -> Vec<&'a SubValue> {
+    args.options
+        .iter()
+        .filter(|(seen, _)| seen == name)
+        .map(|(_, value)| value)
+        .collect()
+}
+
 fn option_text<'a>(args: &'a SubArgs, name: &str) -> Option<&'a str> {
-    args.options.iter().rev().find_map(|(seen, value)| {
-        if seen == name {
-            match value {
-                SubValue::Text(text) => Some(text.as_str()),
-                SubValue::Int(_) => None,
-            }
-        } else {
-            None
-        }
-    })
+    option_values(args, name)
+        .into_iter()
+        .rev()
+        .find_map(|value| match value {
+            SubValue::Text(text) => Some(text.as_str()),
+            SubValue::Int(_) => None,
+        })
 }
 
 /// Every value of a repeatable option, in the order the
 /// caller named them.
 fn option_list<'a>(args: &'a SubArgs, name: &str) -> Vec<&'a str> {
-    args.options
-        .iter()
-        .filter_map(|(seen, value)| {
-            if seen == name {
-                match value {
-                    SubValue::Text(text) => Some(text.as_str()),
-                    SubValue::Int(_) => None,
-                }
-            } else {
-                None
-            }
+    option_values(args, name)
+        .into_iter()
+        .filter_map(|value| match value {
+            SubValue::Text(text) => Some(text.as_str()),
+            SubValue::Int(_) => None,
         })
         .collect()
 }
 
 fn option_int<'a>(args: &'a SubArgs, name: &str) -> Option<&'a Value> {
-    args.options.iter().rev().find_map(|(seen, value)| {
-        if seen == name {
-            match value {
-                SubValue::Int(value) => Some(value),
-                SubValue::Text(_) => None,
-            }
-        } else {
-            None
-        }
-    })
+    option_values(args, name)
+        .into_iter()
+        .rev()
+        .find_map(|value| match value {
+            SubValue::Int(value) => Some(value),
+            SubValue::Text(_) => None,
+        })
 }
 
 fn require(command: &str, args: &SubArgs) -> Result<(), ParserError> {
@@ -568,7 +598,7 @@ fn require(command: &str, args: &SubArgs) -> Result<(), ParserError> {
 }
 
 fn report_error(error: &Error) -> ExitCode {
-    eprintln!("error: {}", error.message());
+    eprint_line(&format!("error: {}", error.message()));
     ExitCode::from(error.exit_code())
 }
 
@@ -645,6 +675,18 @@ fn first_undecodable_argument(os_argv: &[std::ffi::OsString]) -> Option<usize> {
     (0..os_argv.len()).find(|&i| !exempt[i] && os_argv[i].to_str().is_none())
 }
 
+/// The current instant in UTC. The command line is the one
+/// clock reader in the repo (CONTRACT DM-6): it reads SystemTime
+/// here and passes the instant in, and the library reads no
+/// wall clock.
+fn now_utc() -> Instant {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_micros() as i128)
+        .unwrap_or(0);
+    Instant::from_epoch_micros(micros, Some(0))
+}
+
 fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode, Error> {
     if let Some(index) = first_undecodable_argument(os_argv) {
         return Ok(parser_fail(
@@ -677,7 +719,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
             || token == "--help"
             || (token.starts_with("-h") && !token.starts_with("--"))
         {
-            println!("{MAIN_HELP}");
+            print_line(MAIN_HELP);
             return Ok(ExitCode::from(0));
         }
         if token.starts_with("--") && token.len() > 2 {
@@ -697,7 +739,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                             ),
                         ));
                     }
-                    println!("{MAIN_HELP}");
+                    print_line(MAIN_HELP);
                     return Ok(ExitCode::from(0));
                 }
                 Ok(Some("--state")) => {
@@ -794,7 +836,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
         ));
     }
     let switch = Switch::new(state_path.unwrap());
-    let now = Instant::now_utc();
+    let now = now_utc();
     let run = args.positionals.first().cloned().unwrap_or_default();
     let run_value = Value::Str(run.clone());
     match command.as_str() {
@@ -819,21 +861,21 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                 &soft_ceiling,
                 &hard_ceiling,
             )?;
-            println!("registered {run}");
+            print_line(&format!("registered {run}"));
         }
         "prove" => {
             let note = option_text(&args, "--note").unwrap_or("").to_string();
             switch.prove(&run_value, &Value::Str(note), &now)?;
-            println!("proved {run}");
+            print_line(&format!("proved {run}"));
         }
         "spend" => {
             let amount = option_int(&args, "--amount").unwrap().clone();
             let total = switch.spend(&run_value, &amount, &now)?;
-            println!("spend_total {total}");
+            print_line(&format!("spend_total {total}"));
         }
         "pull" => {
             let stage = switch.pull(&run_value, &now)?;
-            println!("stage {stage}");
+            print_line(&format!("stage {stage}"));
         }
         "stage" => {
             stage_command(&switch, &run_value, &now, &args)?;
@@ -847,7 +889,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                 for reason in &record.reasons {
                     line.push_str(&format!(" reason={reason}"));
                 }
-                println!("{line}");
+                print_line(&line);
             }
         }
     }
@@ -874,23 +916,12 @@ fn stage_command(
     let judge_args = option_list(args, "--judge-arg");
     let judge_timeout = option_int(args, "--judge-timeout");
     let host_context = option_text(args, "--host-context");
-    if judge.is_some() && fixture_file.is_some() {
-        return Err(Error::InvalidRequest(
-            "exactly one judge form may stand named on one call".to_string(),
-        ));
-    }
-    if judge.is_none() {
-        if !judge_args.is_empty() {
-            return Err(Error::InvalidRequest(
-                "a judge argument stands named with no judge program to carry it".to_string(),
-            ));
-        }
-        if judge_timeout.is_some() {
-            return Err(Error::InvalidRequest(
-                "a judge timeout stands named with no judge program to carry it".to_string(),
-            ));
-        }
-    }
+    validate_judge_form(
+        judge.is_some(),
+        fixture_file.is_some(),
+        !judge_args.is_empty(),
+        judge_timeout.is_some(),
+    )?;
     let timeout = match judge_timeout {
         Some(value) => Some(judge_timeout_duration(value)?),
         None => None,
@@ -915,13 +946,13 @@ fn stage_command(
         None
     };
     let report = switch.stage_with_model(run_value, now, transport, host_context)?;
-    println!("stage {}", report.stage);
+    print_line(&format!("stage {}", report.stage));
     for reason in &report.reasons {
-        println!("reason {reason}");
+        print_line(&format!("reason {reason}"));
     }
     if let Some(lines) = report.appended.as_ref().and_then(consultation_lines) {
         for line in lines {
-            println!("{line}");
+            print_line(&line);
         }
     }
     Ok(())
