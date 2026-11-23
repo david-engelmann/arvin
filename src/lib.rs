@@ -2700,7 +2700,8 @@ fn validate_run(value: &Value) -> Result<Run> {
     };
     let id = validate_stored_name(field(pairs, "id"))?;
     let id_repr = py_repr_str(&id);
-    let (registered_instant, registered_at) = parse_stored_instant_text(field(pairs, "registered_at"))?;
+    let (registered_instant, registered_at) =
+        parse_stored_instant_text(field(pairs, "registered_at"))?;
     let proof_interval_seconds = match field(pairs, "proof_interval_seconds").as_json_int() {
         Some(number) if number.cmp_i128(1) != Ordering::Less => number,
         _ => {
