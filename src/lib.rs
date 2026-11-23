@@ -4113,6 +4113,18 @@ impl ModelTransport for SubprocessTransport {
 
 static PAYLOAD_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// The lowercase hex text of a draw of random bytes, the
+/// suffix the temporary names of this module carry, stated
+/// once for the publication's temporary name and the
+/// payload writer's alike (DM-A44).
+fn hex_text(bytes: &[u8]) -> String {
+    let mut text = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        text.push_str(&format!("{byte:02x}"));
+    }
+    text
+}
+
 /// Write the call payload to a temporary file created
 /// exclusively, in the directory the process environment
 /// names for temporary files, under a name carrying the
@@ -4123,10 +4135,7 @@ fn write_payload_temp(payload: &str) -> std::io::Result<PathBuf> {
     for _ in 0..16 {
         let mut draw = [0u8; 8];
         getrandom::fill(&mut draw).map_err(|err| std::io::Error::other(err.to_string()))?;
-        let mut suffix = String::new();
-        for byte in draw {
-            suffix.push_str(&format!("{byte:02x}"));
-        }
+        let suffix = hex_text(&draw);
         let count = PAYLOAD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
             "arvin-judge-{}-{count}-{suffix}",
@@ -4298,9 +4307,7 @@ impl Switch {
         getrandom::fill(&mut draw).map_err(|err| {
             Error::Failure(format!("the publication draw could not be made, {err}"))
         })?;
-        for byte in draw {
-            name.push_str(&format!("{byte:02x}"));
-        }
+        name.push_str(&hex_text(&draw));
         let temp = self.path.with_file_name(name);
         // The temporary file is opened exclusively, so a plant
         // standing at the name fails the publish instead of being
