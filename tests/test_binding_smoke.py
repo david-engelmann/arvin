@@ -671,6 +671,72 @@ def test_stage_with_model_refuses_two_judge_forms_together(tmp_path):
     assert len(arvin.log(state, "run-a")) == 2
 
 
+def test_stage_with_model_refuses_orphan_judge_parts(tmp_path):
+    # The two orphan part refusals of the judge form stand
+    # pinned on the command line and stand unpinned here
+    # without this test (DM-A45). A judge argument or a judge
+    # timeout named with no judge program to carry it refuses
+    # in the shared words, before any state stands touched.
+    # The pin fails where the binding's form call passes a
+    # wrong named predicate for either part, because the call
+    # then runs the no transport path and appends a record
+    # instead of raising. The empty argument list and the
+    # zero timeout are named parts as well and refuse in the
+    # same words, the zero before any timeout parsing; a
+    # conversion that read either as absent would let the
+    # call through, so both stand pinned here too.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    with pytest.raises(arvin.InvalidRequestError) as argument:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge_args=["--flag"],
+        )
+    assert str(argument.value) == (
+        "a judge argument stands named with no judge program to carry it"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+    with pytest.raises(arvin.InvalidRequestError) as timeout:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge_timeout=30,
+        )
+    assert str(timeout.value) == (
+        "a judge timeout stands named with no judge program to carry it"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+    with pytest.raises(arvin.InvalidRequestError) as empty:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge_args=[],
+        )
+    assert str(empty.value) == (
+        "a judge argument stands named with no judge program to carry it"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+    with pytest.raises(arvin.InvalidRequestError) as zero:
+        arvin.stage_with_model(
+            state,
+            "run-a",
+            T_WARN,
+            judge_timeout=0,
+        )
+    assert str(zero.value) == (
+        "a judge timeout stands named with no judge program to carry it"
+    )
+    assert len(arvin.log(state, "run-a")) == 2
+
+
 def test_stage_with_model_refuses_a_label_outside_the_three(tmp_path):
     state = str(tmp_path / "state.json")
     seat_at_warn(state)
@@ -722,6 +788,38 @@ def test_stage_with_model_fixture_shape_edges_refuse(tmp_path):
     )
     assert len(arvin.log(state, "run-a")) == 2
 
+
+
+def test_stage_with_model_judge_timeout_integer_ceiling_rendering(
+    tmp_path,
+):
+    # The command line renders a whole number timeout
+    # standing at or past the surfaces' whole ceiling as
+    # the ceiling itself in its refusal, and the binding
+    # holds its own copy of that rendering in its refusal.
+    # The integer path stands pinned here in its exact
+    # message, at the ceiling, where the rendered digits
+    # equal the typed digits, and one past it, where the
+    # rendered digits are the ceiling's and not the
+    # caller's.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    for value in (2**64, 2**64 + 1):
+        with pytest.raises(arvin.InvalidRequestError) as raised:
+            arvin.stage_with_model(
+                state,
+                "run-a",
+                T_WARN,
+                judge="a-helper",
+                judge_timeout=value,
+            )
+        assert str(raised.value) == (
+            "judge timeout 18446744073709551616 does not stand "
+            "as a positive number of seconds the transport "
+            "can hold"
+        )
+        assert len(arvin.log(state, "run-a")) == 2
 
 def test_stage_with_model_host_context_without_a_transport_refuses(
     tmp_path,
@@ -988,6 +1086,45 @@ def test_stage_with_model_judge_args_tuple_reaches_the_helper(
     assert marker.read_text() == "--first --second"
     last = arvin.log(state, "run-a")[-1]
     assert last["model_verdict"] == "hold"
+
+
+def test_stage_with_model_accepts_the_widest_judge_timeout(tmp_path):
+    # The widest whole second count the transport can hold
+    # stands accepted by the binding's integer arm, one second
+    # below the count the refusal pins close over (DM-A46).
+    # The call raises no refusal, and the deadline the
+    # transport cannot add to the current instant fails the
+    # consultation ahead of any spawn, so the helper never
+    # runs and the record carries the call failed class. The
+    # pin fails where the arm narrows its ceiling by one
+    # second, because the call then raises the refusal
+    # instead, and where the deadline check moves behind the
+    # spawn, because the helper then writes its marker.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+    marker = tmp_path / "payload-path.txt"
+    helper = tmp_path / "judge.sh"
+    helper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s' \"$2\" > \"{marker}\"\n"
+        "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
+        "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
+        "{\"level\": 5}}'\n"
+    )
+    helper.chmod(0o755)
+    report = arvin.stage_with_model(
+        state,
+        "run-a",
+        T_WARN,
+        judge=str(helper),
+        judge_timeout=2**64 - 1,
+    )
+    assert report["stage"] == "warn"
+    assert report["appended"]["fallback_taken"] == "call failed"
+    assert report["appended"]["model_verdict"] is None
+    assert not marker.exists()
+    last = arvin.log(state, "run-a")[-1]
+    assert last["fallback_taken"] == "call failed"
 
 
 def test_binding_log_records_carry_the_ancestry_field(tmp_path):

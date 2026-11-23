@@ -202,6 +202,87 @@ fn ci_runs_the_local_gate_commands() {
     assert!(commands.iter().any(|c| c == CLIPPY_COMMAND));
 }
 
+/// The pytest file arguments the workflow's binding job
+/// names, read from the binding job's own section of the
+/// workflow text, so a judgement about the binding job never
+/// borrows a line from another job. A job section runs from
+/// its two space key to the next two space key.
+fn binding_pytest_files(ci_text: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut in_binding = false;
+    for line in ci_text.lines() {
+        let stripped = line.trim();
+        let job_key = line.starts_with("  ")
+            && !line.starts_with("   ")
+            && stripped.ends_with(':')
+            && !stripped.contains(' ');
+        if job_key {
+            in_binding = stripped == "binding:";
+            continue;
+        }
+        if in_binding && stripped.starts_with("python -m pytest") {
+            files.extend(
+                stripped
+                    .split_whitespace()
+                    .skip(3)
+                    .map(|name| name.to_string()),
+            );
+        }
+    }
+    files
+}
+
+#[test]
+fn ci_binding_job_runs_both_binding_suites() {
+    // DM-A23: DM-A8's repair made the binding job run both
+    // Python suites, and no pin guarded the repair, so the
+    // replay file could drop out of the binding job with
+    // every pin green. This pin reads the binding job's own
+    // section and names both files.
+    let files = binding_pytest_files(&read(".github/workflows/ci.yml"));
+    assert!(
+        files.iter().any(|f| f == "tests/test_binding_smoke.py"),
+        "{files:?}"
+    );
+    assert!(
+        files.iter().any(|f| f == "tests/test_binding_replay.py"),
+        "{files:?}"
+    );
+    // The plausible wrong forms of the regression must fail
+    // the helper: the binding job naming the smoke file
+    // alone, the replay file alone, and a text whose binding
+    // job names the smoke file alone while another job's
+    // pytest line names both, which the helper must not
+    // borrow across the job boundary.
+    let binding_head = "jobs:\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest ";
+    let both = binding_pytest_files(&format!(
+        "{binding_head}tests/test_binding_smoke.py tests/test_binding_replay.py\n"
+    ));
+    assert_eq!(both.len(), 2, "{both:?}");
+    let smoke_only = binding_pytest_files(&format!("{binding_head}tests/test_binding_smoke.py\n"));
+    assert!(
+        !smoke_only
+            .iter()
+            .any(|f| f == "tests/test_binding_replay.py"),
+        "{smoke_only:?}"
+    );
+    let replay_only =
+        binding_pytest_files(&format!("{binding_head}tests/test_binding_replay.py\n"));
+    assert!(
+        !replay_only
+            .iter()
+            .any(|f| f == "tests/test_binding_smoke.py"),
+        "{replay_only:?}"
+    );
+    let borrowed = binding_pytest_files(
+        "jobs:\n  test:\n    steps:\n      - run: python -m pytest tests/test_binding_smoke.py tests/test_binding_replay.py\n  binding:\n    steps:\n      - name: Build the binding\n        run: |\n          python -m pytest tests/test_binding_smoke.py\n",
+    );
+    assert!(
+        !borrowed.iter().any(|f| f == "tests/test_binding_replay.py"),
+        "{borrowed:?}"
+    );
+}
+
 #[test]
 fn ci_carries_the_fleet_credential_hygiene() {
     let text = read(".github/workflows/ci.yml");
@@ -216,19 +297,47 @@ fn ci_carries_the_fleet_credential_hygiene() {
         .lines()
         .any(|line| line.trim() == "persist-credentials: false"));
     assert!(!text.contains("rust-toolchain@master"));
-    let toolchain_line = text
-        .lines()
-        .find(|line| line.contains("dtolnay/rust-toolchain@"))
-        .expect("the workflow carries no toolchain step");
-    let pin = toolchain_line
-        .split("dtolnay/rust-toolchain@")
-        .nth(1)
-        .unwrap()
-        .trim();
-    assert_eq!(pin.len(), 40, "{}", toolchain_line);
-    assert!(pin
-        .bytes()
-        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+    assert!(toolchain_pins_all_full(&text));
+}
+
+/// Whether every toolchain step in a workflow text stands
+/// pinned to a full commit SHA, and at least one stands in
+/// the text at all. The workflow carries the toolchain step
+/// once per job, so the judgement runs over every line that
+/// names the action, not the first alone.
+fn toolchain_pins_all_full(text: &str) -> bool {
+    let mut seen = false;
+    for line in text.lines() {
+        if let Some((_, pin)) = line.split_once("dtolnay/rust-toolchain@") {
+            seen = true;
+            let pin = pin.trim();
+            if pin.len() != 40
+                || !pin
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return false;
+            }
+        }
+    }
+    seen
+}
+
+#[test]
+fn ci_toolchain_pin_judges_every_toolchain_line() {
+    let ci_text = read(".github/workflows/ci.yml");
+    assert!(toolchain_pins_all_full(&ci_text));
+    // A second toolchain step repinned to a branch name or a
+    // short digest passes the first line judgement this pin
+    // replaces, so the every line judgement must refuse both
+    // texts, and a text carrying no toolchain step at all.
+    let pinned = "      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8\n";
+    let branch = "      - uses: dtolnay/rust-toolchain@master\n";
+    let short = "      - uses: dtolnay/rust-toolchain@683b588\n";
+    assert!(toolchain_pins_all_full(&format!("{pinned}{pinned}")));
+    assert!(!toolchain_pins_all_full(&format!("{pinned}{branch}")));
+    assert!(!toolchain_pins_all_full(&format!("{pinned}{short}")));
+    assert!(!toolchain_pins_all_full("name: CI\n"));
 }
 
 #[test]
@@ -444,4 +553,57 @@ fn codepoint_scan_refuses_a_root_that_does_not_stand() {
     assert!(result.stderr.contains("scan error"), "{}", result.stderr);
     assert!(result.stderr.contains("no-such-tree"), "{}", result.stderr);
     assert!(result.stdout.is_empty(), "{}", result.stdout);
+}
+
+#[test]
+fn codepoint_scan_refuses_an_extra_argument() {
+    // DM-A25: the scanner read its root from the first
+    // argument and never examined the rest, so a call naming
+    // two clean roots scanned one and reported success for
+    // the whole call. The call now refuses before any
+    // scanning, at exit 2, with empty stdout.
+    let first = temp_dir("extra-arg-first");
+    let second = temp_dir("extra-arg-second");
+    std::fs::write(first.join("clean.md"), "clean").unwrap();
+    std::fs::write(second.join("clean.md"), "clean").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_codepoint_scan"))
+        .arg(&first)
+        .arg(&second)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "scan error, unexpected extra argument after the scan root\n"
+    );
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn codepoint_scan_reports_a_failed_output_write() {
+    // DM-A24: the scanner printed its report through the
+    // panicking macros, so a failed write panicked. The
+    // report now goes out through a checked writer, and a
+    // failed write answers the scan error line at exit 2.
+    // The device is opened for writing, because a read only
+    // descriptor's writes are silently accepted by the
+    // standard output layer and the drive would prove
+    // nothing.
+    let dir = temp_dir("full-output");
+    std::fs::write(dir.join("note.md"), "a\u{2014}b").unwrap();
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_codepoint_scan"))
+        .arg(&dir)
+        .stdout(std::process::Stdio::from(full))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "scan error, the scan output could not be written\n"
+    );
 }
