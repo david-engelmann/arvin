@@ -50,7 +50,7 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyTuple};
 use arvin_core::{
     Consultation, Error, FixtureTransport, Instant, Record, StageReport, SubprocessTransport,
     Switch, Value, Verdict, DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT,
-    DEFAULT_PROOF_INTERVAL_SECONDS, TIMEOUT_WHOLE_CEILING,
+    DEFAULT_PROOF_INTERVAL_SECONDS,
 };
 
 create_exception!(arvin, ArvinError, pyo3::exceptions::PyException);
@@ -674,24 +674,11 @@ fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
             "judge_timeout must be a number, not a boolean",
         ));
     }
-    // A value standing at or past the surfaces' whole
-    // ceiling renders as the ceiling itself in its refusal,
-    // the boundary the refusal names, because the value
-    // crossed no surface whole. Every other value renders
-    // as itself.
     let refusal = |rendered: &Value| {
-        let past_ceiling = match rendered {
-            Value::Int(number) => *number >= 1 && *number as u128 >= TIMEOUT_WHOLE_CEILING,
-            _ => false,
-        };
-        let rendering = if past_ceiling {
-            TIMEOUT_WHOLE_CEILING.to_string()
-        } else {
-            arvin_core::py_printable(rendered)
-        };
         to_py_error(Error::InvalidRequest(format!(
-            "judge timeout {rendering} does not stand as a positive number of seconds the \
-             transport can hold"
+            "judge timeout {} does not stand as a positive number of seconds the \
+             transport can hold",
+            arvin_core::timeout_printable(rendered)
         )))
     };
     if value.is_instance_of::<PyInt>() {
