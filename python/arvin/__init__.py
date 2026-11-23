@@ -3,8 +3,11 @@
 This package is the thin Python face of the arvin library.
 Each function calls the library and returns the facts the
 command line reports, as plain dictionaries where the facts
-carry names, and a refusal raises a subclass of ArvinError
-carrying the same message text the command line prints.
+carry names, and a refusal from the switch raises a subclass
+of ArvinError carrying the same message text the command line
+prints. An argument of the wrong Python type raises TypeError
+instead, a boolean where a number belongs among them, as
+Python convention holds.
 InvalidNameError covers a run id in the wrong shape,
 InvalidRequestError a request value that is not usable,
 NotFoundError a run missing from the state file, RefusalError
