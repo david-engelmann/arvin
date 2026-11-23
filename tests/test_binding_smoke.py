@@ -1088,6 +1088,45 @@ def test_stage_with_model_judge_args_tuple_reaches_the_helper(
     assert last["model_verdict"] == "hold"
 
 
+def test_stage_with_model_accepts_the_widest_judge_timeout(tmp_path):
+    # The widest whole second count the transport can hold
+    # stands accepted by the binding's integer arm, one second
+    # below the count the refusal pins close over (DM-A46).
+    # The call raises no refusal, and the deadline the
+    # transport cannot add to the current instant fails the
+    # consultation ahead of any spawn, so the helper never
+    # runs and the record carries the call failed class. The
+    # pin fails where the arm narrows its ceiling by one
+    # second, because the call then raises the refusal
+    # instead, and where the deadline check moves behind the
+    # spawn, because the helper then writes its marker.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+    marker = tmp_path / "payload-path.txt"
+    helper = tmp_path / "judge.sh"
+    helper.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s' \"$2\" > \"{marker}\"\n"
+        "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
+        "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
+        "{\"level\": 5}}'\n"
+    )
+    helper.chmod(0o755)
+    report = arvin.stage_with_model(
+        state,
+        "run-a",
+        T_WARN,
+        judge=str(helper),
+        judge_timeout=2**64 - 1,
+    )
+    assert report["stage"] == "warn"
+    assert report["appended"]["fallback_taken"] == "call failed"
+    assert report["appended"]["model_verdict"] is None
+    assert not marker.exists()
+    last = arvin.log(state, "run-a")[-1]
+    assert last["fallback_taken"] == "call failed"
+
+
 def test_binding_log_records_carry_the_ancestry_field(tmp_path):
     # The certifying sequence of DM-23 driven through the
     # binding alone. The run rises to throttle on missed
