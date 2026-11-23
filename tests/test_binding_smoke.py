@@ -723,6 +723,38 @@ def test_stage_with_model_fixture_shape_edges_refuse(tmp_path):
     assert len(arvin.log(state, "run-a")) == 2
 
 
+
+def test_stage_with_model_judge_timeout_integer_ceiling_rendering(
+    tmp_path,
+):
+    # The command line renders a whole number timeout
+    # standing at or past the surfaces' whole ceiling as
+    # the ceiling itself in its refusal, and the binding
+    # holds its own copy of that rendering in its refusal.
+    # The integer path stands pinned here in its exact
+    # message, at the ceiling, where the rendered digits
+    # equal the typed digits, and one past it, where the
+    # rendered digits are the ceiling's and not the
+    # caller's.
+    state = str(tmp_path / "state.json")
+    seat_at_warn(state)
+
+    for value in (2**64, 2**64 + 1):
+        with pytest.raises(arvin.InvalidRequestError) as raised:
+            arvin.stage_with_model(
+                state,
+                "run-a",
+                T_WARN,
+                judge="a-helper",
+                judge_timeout=value,
+            )
+        assert str(raised.value) == (
+            "judge timeout 18446744073709551616 does not stand "
+            "as a positive number of seconds the transport "
+            "can hold"
+        )
+        assert len(arvin.log(state, "run-a")) == 2
+
 def test_stage_with_model_host_context_without_a_transport_refuses(
     tmp_path,
 ):

@@ -740,6 +740,129 @@ fn a_missing_state_file_reads_as_not_found_and_creates_nothing() {
     assert_eq!(switch.log(&text("run-a")).unwrap()[0].kind, "registered");
 }
 
+#[test]
+fn a_state_path_that_cannot_be_examined_reads_as_corrupt() {
+    // DM-A40. The state path stands under a regular file, so
+    // examining it fails for a reason that is not absence.
+    // The log read answers the corrupt error DM-8 seats for
+    // a state file that cannot be read, and never the not
+    // found answer a run lookup gives on the empty document
+    // a missing file yields. The permission form of the same
+    // failure cannot be pinned portably, a test running as
+    // root examining through permissions that refuse other
+    // users, so the pin drives the discrimination through
+    // the not a directory failure.
+    let dir = TestDir::new("unexaminable-path");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"a regular file").unwrap();
+    let switch = Switch::new(blocker.join("state.json"));
+    let err = switch.log(&text("run-a")).unwrap_err();
+    assert!(
+        matches!(err, Error::Corrupt(_)),
+        "expected a corrupt state error, got {err:?}"
+    );
+    assert!(
+        err.message().contains("the state file cannot be read"),
+        "expected the refusal to name the unreadable state file, got {:?}",
+        err.message()
+    );
+}
+
+#[test]
+fn a_lock_file_that_cannot_be_opened_refuses_as_a_failure() {
+    // DM-A48. A directory standing at the lock path makes
+    // the lock open fail on every platform and under every
+    // user, root included, so the refusal is driven through
+    // the standing directory and not through permissions, the
+    // portable form of the failure, as DM-A40's pin drives
+    // its unexaminable state path through the not a directory
+    // failure. A read and a registration alike refuse in the
+    // failure class DM-8 seats for the switch's own
+    // operational failures, naming the lock file that cannot
+    // be opened, where a state file that cannot be read
+    // refuses as corruption at DM-A40's neighbouring seat, so
+    // a regression classing this seat as corruption fails
+    // here. The state bytes stand unchanged after both
+    // refusals.
+    let dir = TestDir::new("unopenable-lock");
+    let switch = make_switch(&dir);
+    register(&switch, "run-a", &t0());
+    let before = state_bytes(&dir);
+    let lock_path = dir.path().join("state.json.lock");
+    std::fs::remove_file(&lock_path).expect("the lock file stands");
+    std::fs::create_dir(&lock_path).expect("the lock directory stands");
+    let err = switch.log(&text("run-a")).unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the lock file beside the state file cannot be opened"),
+        "expected the refusal to name the unopenable lock file, got {:?}",
+        err.message()
+    );
+    let err = register_values(
+        &switch,
+        &text("run-b"),
+        &t0(),
+        &int(60),
+        &int(5),
+        &Value::Null,
+        &Value::Null,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the lock file beside the state file cannot be opened"),
+        "expected the refusal to name the unopenable lock file, got {:?}",
+        err.message()
+    );
+    assert_eq!(state_bytes(&dir), before);
+}
+
+#[test]
+fn a_state_path_under_a_regular_file_refuses_registration_as_a_failure() {
+    // DM-A48. The state path stands under a regular file, so
+    // the directory holding it cannot be created, and a
+    // registration refuses in the failure class naming that
+    // directory, before any lock stands taken or any read
+    // stands attempted. A read of the same path refuses as
+    // corruption under DM-A40's pin, the state file that
+    // cannot be read, so the two classes stand discriminated
+    // at one path shape, the mutation answering for its
+    // uncreatable directory and the read for its unreadable
+    // file.
+    let dir = TestDir::new("uncreatable-directory");
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"a regular file").unwrap();
+    let switch = Switch::new(blocker.join("state.json"));
+    let err = register_values(
+        &switch,
+        &text("run-a"),
+        &t0(),
+        &int(60),
+        &int(5),
+        &Value::Null,
+        &Value::Null,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Failure(_)),
+        "expected a failure error, got {err:?}"
+    );
+    assert!(
+        err.message()
+            .contains("the directory holding the state file cannot be created"),
+        "expected the refusal to name the uncreatable directory, got {:?}",
+        err.message()
+    );
+}
+
 macro_rules! invalid_id_case {
     ($name:ident, $bad:expr) => {
         #[test]
@@ -1106,6 +1229,50 @@ fn from_civil_accepts_parts_at_the_valid_bounds() {
     let offset_edge_low =
         Instant::from_civil(2031, 5, 4, 12, 0, 0, 0, Some(-86_399_999_999)).unwrap();
     assert!(offset_edge_low.is_aware());
+}
+
+#[test]
+fn from_epoch_micros_builds_the_instant_the_count_names() {
+    // The base instant stands 22,403 days and 12 hours past the
+    // epoch, which is 1,935,662,400,000,000 microseconds.
+    let base = Instant::from_epoch_micros(1_935_662_400_000_000, Some(0));
+    assert_eq!(format_instant(&base).unwrap(), "2031-05-04T12:00:00+00:00");
+    // The offset names the spelling a reading was taken in, not
+    // a shift of the instant: the same count read against a two
+    // hour offset is the same instant, and the count two hours
+    // later is the one that renders two hours on.
+    let shifted = Instant::from_epoch_micros(1_935_662_400_000_000, Some(7_200_000_000));
+    assert_eq!(shifted, base);
+    let later = Instant::from_epoch_micros(1_935_669_600_000_000, Some(0));
+    assert_eq!(format_instant(&later).unwrap(), "2031-05-04T14:00:00+00:00");
+    // A count one microsecond before the epoch floors into the
+    // last microsecond of 1969, never toward zero.
+    let before = Instant::from_epoch_micros(-1, Some(0));
+    assert_eq!(
+        format_instant(&before).unwrap(),
+        "1969-12-31T23:59:59.999999+00:00"
+    );
+}
+
+#[test]
+fn from_epoch_micros_past_the_storage_edge_refuses_at_rendering() {
+    // A day count of 2^64 stored unchecked would narrow to day
+    // zero and render as the epoch. The constructor clamps it
+    // to the first refused day instead, and the rendering
+    // refuses it with the range refusal.
+    let wrapped = Instant::from_epoch_micros((1_i128 << 64) * 86_400_000_000, None);
+    let err = format_instant(&wrapped).expect_err("the wrapped count refuses");
+    assert_eq!(
+        err.message(),
+        "the instant stands outside the range the switch can record"
+    );
+    // A count at the top of the i128 range with an offset past
+    // it saturates instead of overflowing, and refuses the same
+    // way, as does its mirror at the bottom of the range.
+    let topped = Instant::from_epoch_micros(i128::MAX, Some(1));
+    assert!(format_instant(&topped).is_err());
+    let bottomed = Instant::from_epoch_micros(i128::MIN, Some(-1));
+    assert!(format_instant(&bottomed).is_err());
 }
 
 #[test]
@@ -1535,6 +1702,39 @@ fn damage_battery_text_shapes() {
     assert_corrupt_document(&second, &raw[..raw.len() / 2]);
     let third = TestDir::new("damage-text-not-json");
     assert_corrupt_document(&third, b"this is not json");
+}
+#[test]
+fn cli_renders_a_duplicated_key_in_its_escaped_form() {
+    // DM-A22: the duplicated key message was the one error
+    // message in the library that rendered document text
+    // raw. A key the document's escapes decode to a newline
+    // put a second line into the error output, against the
+    // one line discipline; the message now renders the key
+    // through the repr, as every sibling message renders its
+    // values.
+    let dir = TestDir::new("duplicate-key-message");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    std::fs::write(
+        &state,
+        r#"{"format": "deadman-state/1", "a\nb": 1, "a\nb": 2, "runs": []}"#,
+    )
+    .unwrap();
+    let (_, stderr) = run_cli(&["--state", &state_arg, "log", "run-a"], 1);
+    assert_eq!(
+        stderr,
+        "error: the state is corrupt, a key stands twice in the document, 'a\\nb'\n"
+    );
+    std::fs::write(
+        &state,
+        r#"{"format": "deadman-state/1", "format": "deadman-state/1", "runs": []}"#,
+    )
+    .unwrap();
+    let (_, stderr) = run_cli(&["--state", &state_arg, "log", "run-a"], 1);
+    assert_eq!(
+        stderr,
+        "error: the state is corrupt, a key stands twice in the document, 'format'\n"
+    );
 }
 
 /// Replace the reasons array at the given index among the
@@ -2327,6 +2527,32 @@ fn cli_error_exits_and_messages() {
         2,
     );
     assert!(stderr.starts_with("error:"), "{stderr}");
+}
+
+#[test]
+fn cli_help_and_parser_errors_share_the_usage_line() {
+    // DM-A47: the help surface and the parser error surface print the
+    // command's usage line, and the two spellings stood duplicated in
+    // the binary until the help text was composed from the one usage
+    // string. This pin drives both surfaces for every command and
+    // compares the usage block each prints, so a divergence between
+    // the spellings, including a dropped composition, fails here.
+    let dir = TestDir::new("cli-usage-line");
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    for command in ["register", "prove", "spend", "pull", "stage", "log"] {
+        let (help, _) = run_cli(&["--state", &state, command, "--help"], 0);
+        let help_usage = help
+            .split("\n\n")
+            .next()
+            .expect("help opens with its usage");
+        let (_, stderr) = run_cli(&["--state", &state, command], 2);
+        let error_line = format!("\narvin {command}: error:");
+        let error_usage = stderr
+            .split(&error_line)
+            .next()
+            .expect("the parser error opens with its usage");
+        assert_eq!(help_usage, error_usage, "command {command}");
+    }
 }
 
 #[test]
@@ -4232,7 +4458,12 @@ fn cli_stage_and_log_carry_no_model_surface() {
 /// reads it, the anchor the command line constructions hang
 /// from.
 fn wall_second() -> Instant {
-    let text = format_instant(&Instant::now_utc()).expect("the wall clock formats");
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_micros() as i128)
+        .unwrap_or(0);
+    let now = Instant::from_epoch_micros(micros, Some(0));
+    let text = format_instant(&now).expect("the wall clock formats");
     parse_instant(&format!("{}+00:00", &text[..19])).expect("the whole second parses")
 }
 
@@ -4857,6 +5088,43 @@ fn cli_model_judge_timeout_past_the_widest_duration_refuses_at_exit_2() {
 }
 
 #[test]
+fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_helper() {
+    // The inside edge of the timeout boundary the refusal
+    // pins judge from the outside. The widest whole second
+    // count the duration holds stands accepted by the
+    // surface, and the transport then fails the call on its
+    // checked deadline addition before any helper stands,
+    // the arm DM-21 states, so the helper never runs and
+    // the consultation lands in the call failed class.
+    let dir = TestDir::new("model-cli-timeout-widest");
+    let switch = cli_switch_at_warn(&dir);
+    let marker = dir.path().join("helper-ran.txt");
+    let body = format!(
+        "#!/bin/sh\nprintf '%s' 'ran' > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+        marker.display()
+    );
+    let helper = write_helper(&dir, "judge.sh", &body);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge",
+            &helper_text,
+            "--judge-timeout",
+            "18446744073709551615",
+        ],
+        0,
+    );
+    let record = last_record(&switch);
+    assert_fallback(&stdout, &record, "call failed");
+    assert!(!marker.exists(), "the helper never ran");
+}
+
+#[test]
 fn a_helper_written_from_the_contract_statement_alone_interoperates() {
     // The stranger pin of DM-21. The helper below is written
     // from the obligation's statement alone. It finds the
@@ -4971,4 +5239,116 @@ fn contract_states_the_reply_bound_the_transport_enforces() {
         },
         "a verdict body padded inside the stated bound lands its verdict"
     );
+}
+
+#[test]
+fn a_bare_fraction_separator_before_a_zone_reads_as_no_fraction() {
+    // The Python parser reads a fraction separator with no
+    // digits after it as a zero fraction where a zone
+    // designator follows, probed at Python 3.12.3 (DM-A41).
+    // Each shape below lands at the same instant as its form
+    // with no separator, and every one refuses on the code
+    // before the repair.
+    for (bare, plain) in [
+        ("2033-01-01T00:00:00.+00:00", "2033-01-01T00:00:00+00:00"),
+        ("2033-01-01T00:00:00.Z", "2033-01-01T00:00:00Z"),
+        ("2033-01-01T00:00:00,-05:00", "2033-01-01T00:00:00-05:00"),
+        ("2033-01-01T00:00.+00:00", "2033-01-01T00:00+00:00"),
+        ("2033-01-01T00.+00:00", "2033-01-01T00+00:00"),
+        ("2033-01-01T000000.+00:00", "2033-01-01T000000+00:00"),
+    ] {
+        let bare_instant = parse_instant(bare).expect(bare);
+        let plain_instant = parse_instant(plain).expect(plain);
+        assert_eq!(bare_instant, plain_instant, "{bare}");
+    }
+}
+
+#[test]
+fn a_bare_fraction_separator_without_a_zone_still_refuses() {
+    // A preservation pin in the standing sense. These shapes
+    // refuse on the code as it stands and must keep refusing,
+    // the bare separator at the end of the string, the bare
+    // separator inside an offset, a doubled separator, and a
+    // second separator after a digit carrying fraction. The
+    // pin fails on the plausible wrong form of the DM-A41
+    // repair, an unconditional admission of zero digits in
+    // the shared fraction reader, which would read the end
+    // of string and offset shapes the reference refuses.
+    for text in [
+        "2033-01-01T00:00:00.",
+        "2033-01-01T00:00:00+00:00:00.",
+        "2033-01-01T00:00:00+00:00.",
+        "2033-01-01T00:00:00..5+00:00",
+        "2033-01-01T00:00:00.5.5+00:00",
+        "2033-01-01T00:00:00+00:.5",
+    ] {
+        assert!(parse_instant(text).is_none(), "{text}");
+    }
+}
+
+/// Run the CLI with stdout redirected to the full device, so
+/// every write the command makes to stdout fails, returning
+/// the exit code and the stderr text. The device is opened
+/// for writing: a read only descriptor's writes are silently
+/// accepted by the standard output layer, so the read only
+/// form would let every command pass and the drive would
+/// prove nothing.
+fn run_cli_stdout_full(args: &[&str]) -> (i32, String) {
+    let full = std::fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .expect("the full device opens");
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .args(args)
+        .stdout(std::process::Stdio::from(full))
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .expect("the binary runs");
+    (
+        output.status.code().expect("the binary exits by code"),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn cli_register_reports_a_failed_output_write() {
+    // DM-A24: the CLI printed through the panicking macros,
+    // so a failed write answered with a panic report at exit
+    // 101, against the module doc's doctrine that no
+    // traceback is ever printed. The checked writer answers
+    // the output error line at exit 1. The mutation itself
+    // has already published when its print fails, which the
+    // closing log read proves.
+    let dir = TestDir::new("print-full-register");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    let (code, stderr) = run_cli_stdout_full(&["--state", &state_arg, "register", "run-a"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
+    let (stdout, _) = run_cli(&["--state", &state_arg, "log", "run-a"], 0);
+    assert!(stdout.contains("registered"), "{stdout}");
+}
+
+#[test]
+fn cli_log_reports_a_failed_output_write() {
+    // DM-A24: the log loop's prints take the same checked
+    // writer, so a failed write mid log answers the same
+    // line at exit 1 rather than a panic.
+    let dir = TestDir::new("print-full-log");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    run_cli(&["--state", &state_arg, "register", "run-a"], 0);
+    let (code, stderr) = run_cli_stdout_full(&["--state", &state_arg, "log", "run-a"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
+}
+
+#[test]
+fn cli_help_reports_a_failed_output_write() {
+    // DM-A24: the help texts print through the same checked
+    // writer, so --help with a dead stdout answers the output
+    // error line at exit 1 rather than panicking.
+    let (code, stderr) = run_cli_stdout_full(&["--help"]);
+    assert_eq!(code, 1);
+    assert_eq!(stderr, "error: the command's output could not be written\n");
 }
