@@ -23,10 +23,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use arvin::{
-    consultation_from_reply_body, py_float_repr, py_printable, py_repr_str, validate_judge_form,
+    consultation_from_reply_body, py_float_repr, py_repr_str, timeout_printable, validate_judge_form,
     Error, FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
     DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
-    MODEL_NAME, TIMEOUT_WHOLE_CEILING,
+    MODEL_NAME,
 };
 
 const MAIN_USAGE: &str =
@@ -977,23 +977,6 @@ fn judge_timeout_duration(value: &Value) -> Result<Duration, Error> {
              transport can hold",
             timeout_printable(value)
         ))),
-    }
-}
-
-/// The rendering of a judge timeout value for its refusal.
-/// A value standing at or past the whole ceiling renders as
-/// the ceiling itself, the boundary the refusal names,
-/// because the value crossed no surface whole. Every other
-/// value renders as itself.
-fn timeout_printable(value: &Value) -> String {
-    let past_ceiling = match value {
-        Value::Int(number) => *number >= 1 && *number as u128 >= TIMEOUT_WHOLE_CEILING,
-        _ => false,
-    };
-    if past_ceiling {
-        TIMEOUT_WHOLE_CEILING.to_string()
-    } else {
-        py_printable(value)
     }
 }
 

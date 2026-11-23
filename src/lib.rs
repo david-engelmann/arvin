@@ -510,6 +510,23 @@ pub fn py_printable(value: &Value) -> String {
     }
 }
 
+/// The rendering of a judge timeout value for its refusal.
+/// A value standing at or past the whole ceiling renders as
+/// the ceiling itself, the boundary the refusal names,
+/// because the value crossed no surface whole. Every other
+/// value renders as itself.
+pub fn timeout_printable(value: &Value) -> String {
+    let past_ceiling = match value {
+        Value::Int(number) => *number >= 1 && *number as u128 >= TIMEOUT_WHOLE_CEILING,
+        _ => false,
+    };
+    if past_ceiling {
+        TIMEOUT_WHOLE_CEILING.to_string()
+    } else {
+        py_printable(value)
+    }
+}
+
 /// The repr of a float, following the Python float repr rules.
 /// The shortest digit string that round trips is taken from the
 /// Rust exponent form, and the notation follows the Python rule,
