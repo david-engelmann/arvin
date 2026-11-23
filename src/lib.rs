@@ -1815,25 +1815,49 @@ fn empty_document() -> Document {
     Document { runs: Vec::new() }
 }
 
-fn object_map(value: &Value) -> Option<std::collections::HashMap<&str, &Value>> {
+// The pairs of an object value, read where they stand. The
+// validators walk these pairs directly, in place, where they
+// once built a hash map of the same pairs on every object
+// they validated, one map per record of every state read.
+// The reader refuses a repeated key at parse time, so a
+// first match lookup over the pairs reads the one value the
+// map would have carried, and a shape check over the pairs
+// counts the same keys the map counted.
+fn object_pairs(value: &Value) -> Option<&[(String, Value)]> {
     match value {
-        Value::Object(pairs) => Some(
-            pairs
-                .iter()
-                .map(|(key, item)| (key.as_str(), item))
-                .collect(),
-        ),
+        Value::Object(pairs) => Some(pairs),
         _ => None,
     }
 }
 
-fn keys_match(map: &std::collections::HashMap<&str, &Value>, expected: &[&str]) -> bool {
-    map.len() == expected.len() && expected.iter().all(|key| map.contains_key(key))
+fn keys_match(pairs: &[(String, Value)], expected: &[&str]) -> bool {
+    pairs.len() == expected.len()
+        && expected
+            .iter()
+            .all(|key| pairs.iter().any(|(name, _)| name.as_str() == *key))
+}
+
+// The value of a field the shape check has already passed,
+// so the key stands present exactly once and the first match
+// is the only match.
+fn field<'a>(pairs: &'a [(String, Value)], key: &str) -> &'a Value {
+    pairs
+        .iter()
+        .find(|(name, _)| name.as_str() == key)
+        .map(|(_, item)| item)
+        .expect("a field the shape check has passed")
+}
+
+fn field_opt<'a>(pairs: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
+    pairs
+        .iter()
+        .find(|(name, _)| name.as_str() == key)
+        .map(|(_, item)| item)
 }
 
 fn validate_record(value: &Value, position: usize) -> Result<Record> {
-    let map = match object_map(value) {
-        Some(map) => map,
+    let pairs = match object_pairs(value) {
+        Some(pairs) => pairs,
         None => {
             return Err(corrupt(
                 "a log record does not carry exactly the recorded fields".to_string(),
@@ -1847,14 +1871,14 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
     // DM-22, and in no other shape. The kind is read before
     // the shape is judged because the extended shapes stand
     // open to stage records alone.
-    let with_ancestry = keys_match(&map, &RECORD_KEYS_ANCESTRY);
-    let extended = with_ancestry || keys_match(&map, &RECORD_KEYS_EXTENDED);
-    if !extended && !keys_match(&map, &RECORD_KEYS) {
+    let with_ancestry = keys_match(pairs, &RECORD_KEYS_ANCESTRY);
+    let extended = with_ancestry || keys_match(pairs, &RECORD_KEYS_EXTENDED);
+    if !extended && !keys_match(pairs, &RECORD_KEYS) {
         return Err(corrupt(
             "a log record does not carry exactly the recorded fields".to_string(),
         ));
     }
-    let seq = map["seq"];
+    let seq = field(pairs, "seq");
     match seq.as_json_int() {
         Some(number) if number.cmp_i128(position as i128 + 1) == Ordering::Equal => {}
         _ => {
@@ -1863,7 +1887,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             ))
         }
     }
-    let kind = match map["kind"] {
+    let kind = match field(pairs, "kind") {
         Value::Str(text) if RECORD_KINDS.contains(&text.as_str()) => text.clone(),
         other => {
             return Err(corrupt(format!(
@@ -1872,12 +1896,12 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             )))
         }
     };
-    let instant = parse_stored_instant(map["at"])?;
-    let at = map["at"]
+    let instant = parse_stored_instant(field(pairs, "at"))?;
+    let at = field(pairs, "at")
         .as_str()
         .expect("a parsed instant is text")
         .to_string();
-    let stage = match map["stage"] {
+    let stage = match field(pairs, "stage") {
         Value::Str(text) if STAGES.contains(&text.as_str()) => text.clone(),
         other => {
             return Err(corrupt(format!(
@@ -1886,7 +1910,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             )))
         }
     };
-    let reasons: Vec<String> = match map["reasons"] {
+    let reasons: Vec<String> = match field(pairs, "reasons") {
         Value::Array(items) => {
             let mut reasons = Vec::new();
             for item in items {
@@ -1923,7 +1947,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                      stand only on a stage record"
                 )));
             }
-            let model_name = match map["model_name"] {
+            let model_name = match field(pairs, "model_name") {
                 Value::Null => None,
                 Value::Str(text) if model_name_shape_ok(text) => Some(text.clone()),
                 _ => {
@@ -1934,7 +1958,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     ))
                 }
             };
-            let model_verdict = match map["model_verdict"] {
+            let model_verdict = match field(pairs, "model_verdict") {
                 Value::Null => None,
                 Value::Str(text) if VERDICT_LABELS.contains(&text.as_str()) => Some(text.clone()),
                 _ => {
@@ -1945,7 +1969,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     ))
                 }
             };
-            let model_confidence = match map["model_confidence"] {
+            let model_confidence = match field(pairs, "model_confidence") {
                 Value::Null => None,
                 value => match model_number_unit(value) {
                     Some(number) => Some(number),
@@ -1958,7 +1982,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     }
                 },
             };
-            let model_score = match map["model_score"] {
+            let model_score = match field(pairs, "model_score") {
                 Value::Null => None,
                 value => match model_number_unit(value) {
                     Some(number) => Some(number),
@@ -1971,7 +1995,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                     }
                 },
             };
-            let fallback_taken = match map["fallback_taken"] {
+            let fallback_taken = match field(pairs, "fallback_taken") {
                 Value::Null => None,
                 Value::Str(text) if FALLBACK_CLASSES.contains(&text.as_str()) => Some(text.clone()),
                 _ => {
@@ -1983,7 +2007,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                 }
             };
             let model_ancestry = if with_ancestry {
-                match map["model_ancestry"] {
+                match field(pairs, "model_ancestry") {
                     Value::Null => None,
                     Value::Str(text) if text == ANCESTRY_BELOW_BAR => Some(text.clone()),
                     _ => {
@@ -2036,10 +2060,10 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
                 model_ancestry,
             )
         } else {
-            for field in RESERVED_FIELDS {
-                if !matches!(map[field], Value::Null) {
+            for name in RESERVED_FIELDS {
+                if !matches!(field(pairs, name), Value::Null) {
                     return Err(corrupt(format!(
-                        "a log record carries a value in the reserved field {field}"
+                        "a log record carries a value in the reserved field {name}"
                     )));
                 }
             }
@@ -2620,12 +2644,8 @@ fn validate_stage_record_against_warrant(
     Ok(())
 }
 
-fn validate_stored_ceiling(
-    map: &std::collections::HashMap<&str, &Value>,
-    field: &str,
-    id: &str,
-) -> Result<Option<i64>> {
-    match map[field] {
+fn validate_stored_ceiling(pairs: &[(String, Value)], name: &str, id: &str) -> Result<Option<i64>> {
+    match field(pairs, name) {
         Value::Null => Ok(None),
         value => match value.as_json_int() {
             Some(number)
@@ -2635,7 +2655,7 @@ fn validate_stored_ceiling(
                 Ok(Some(json_int_as_i64(&number)))
             }
             _ => Err(corrupt(format!(
-                "run {} holds an invalid {field}",
+                "run {} holds an invalid {name}",
                 py_repr_str(id)
             ))),
         },
@@ -2646,22 +2666,24 @@ fn validate_run(value: &Value) -> Result<Run> {
     // A run carries exactly the landed twelve keys or, while
     // a certification of DM-23 stands unconsumed, the same
     // keys plus streak_ancestry, and no third key set stands.
-    let map = match object_map(value) {
-        Some(map) if keys_match(&map, &RUN_KEYS) || keys_match(&map, &RUN_KEYS_WITH_CARRY) => map,
+    let pairs = match object_pairs(value) {
+        Some(pairs) if keys_match(pairs, &RUN_KEYS) || keys_match(pairs, &RUN_KEYS_WITH_CARRY) => {
+            pairs
+        }
         _ => {
             return Err(corrupt(
                 "a run does not carry exactly the recorded fields".to_string(),
             ))
         }
     };
-    let id = validate_stored_name(map["id"])?;
+    let id = validate_stored_name(field(pairs, "id"))?;
     let id_repr = py_repr_str(&id);
-    let registered_instant = parse_stored_instant(map["registered_at"])?;
-    let registered_at = map["registered_at"]
+    let registered_instant = parse_stored_instant(field(pairs, "registered_at"))?;
+    let registered_at = field(pairs, "registered_at")
         .as_str()
         .expect("a parsed instant is text")
         .to_string();
-    let proof_interval_seconds = match map["proof_interval_seconds"].as_json_int() {
+    let proof_interval_seconds = match field(pairs, "proof_interval_seconds").as_json_int() {
         Some(number) if number.cmp_i128(1) != Ordering::Less => number,
         _ => {
             return Err(corrupt(format!(
@@ -2669,7 +2691,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let missed_proof_limit = match map["missed_proof_limit"].as_json_int() {
+    let missed_proof_limit = match field(pairs, "missed_proof_limit").as_json_int() {
         Some(number)
             if number.cmp_i128(1) != Ordering::Less
                 && number.cmp_i128(MISSED_PROOF_LIMIT_MAX as i128) != Ordering::Greater =>
@@ -2682,8 +2704,8 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let soft_ceiling = validate_stored_ceiling(&map, "soft_ceiling", &id)?;
-    let hard_ceiling = validate_stored_ceiling(&map, "hard_ceiling", &id)?;
+    let soft_ceiling = validate_stored_ceiling(pairs, "soft_ceiling", &id)?;
+    let hard_ceiling = validate_stored_ceiling(pairs, "hard_ceiling", &id)?;
     if let (Some(soft), Some(hard)) = (soft_ceiling, hard_ceiling) {
         if soft > hard {
             return Err(corrupt(format!(
@@ -2691,7 +2713,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )));
         }
     }
-    let spend_total = match map["spend_total"].as_json_int() {
+    let spend_total = match field(pairs, "spend_total").as_json_int() {
         Some(number)
             if number.cmp_i128(0) != Ordering::Less
                 && number.cmp_i128(SPEND_MAX as i128) != Ordering::Greater =>
@@ -2704,7 +2726,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let (last_proof_at, last_proof_instant) = match map["last_proof_at"] {
+    let (last_proof_at, last_proof_instant) = match field(pairs, "last_proof_at") {
         Value::Null => (None, None),
         value => {
             let instant = parse_stored_instant(value)?;
@@ -2719,7 +2741,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )
         }
     };
-    let stage = match map["stage"] {
+    let stage = match field(pairs, "stage") {
         Value::Str(text) if STAGES.contains(&text.as_str()) => text.clone(),
         other => {
             return Err(corrupt(format!(
@@ -2728,7 +2750,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let clear_streak = match map["clear_streak"].as_json_int() {
+    let clear_streak = match field(pairs, "clear_streak").as_json_int() {
         Some(number) if number.cmp_i128(0) != Ordering::Less => number,
         _ => {
             return Err(corrupt(format!(
@@ -2736,7 +2758,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let killed = match map["killed"] {
+    let killed = match field(pairs, "killed") {
         Value::Bool(flag) => *flag,
         _ => {
             return Err(corrupt(format!(
@@ -2755,7 +2777,7 @@ fn validate_run(value: &Value) -> Result<Run> {
     // the writer sets it only at a middle stage and clears it
     // on every act that ends or leaves the stage history it
     // belongs to.
-    let streak_ancestry = match map.get("streak_ancestry") {
+    let streak_ancestry = match field_opt(pairs, "streak_ancestry") {
         None => false,
         Some(Value::Bool(true)) if matches!(stage.as_str(), "warn" | "throttle" | "cut tools") => {
             true
@@ -2772,7 +2794,7 @@ fn validate_run(value: &Value) -> Result<Run> {
             )))
         }
     };
-    let log: Vec<Record> = match map["log"] {
+    let log: Vec<Record> = match field(pairs, "log") {
         Value::Array(items) if !items.is_empty() => {
             let mut records = Vec::new();
             for (position, item) in items.iter().enumerate() {
@@ -2825,15 +2847,15 @@ fn validate_run(value: &Value) -> Result<Run> {
 }
 
 fn validate_document(value: &Value) -> Result<Document> {
-    let map = match object_map(value) {
-        Some(map) if keys_match(&map, &DOCUMENT_KEYS) => map,
+    let pairs = match object_pairs(value) {
+        Some(pairs) if keys_match(pairs, &DOCUMENT_KEYS) => pairs,
         _ => {
             return Err(corrupt(
                 "the document does not carry exactly the recorded fields".to_string(),
             ))
         }
     };
-    match map["format"] {
+    match field(pairs, "format") {
         Value::Str(text) if text == FORMAT_NAME => {}
         other => {
             return Err(corrupt(format!(
@@ -2843,7 +2865,7 @@ fn validate_document(value: &Value) -> Result<Document> {
             )))
         }
     }
-    let items = match map["runs"] {
+    let items = match field(pairs, "runs") {
         Value::Array(items) => items,
         _ => return Err(corrupt("the runs field is not a list".to_string())),
     };
@@ -3671,40 +3693,40 @@ pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
         Ok(value) => value,
         Err(_) => return Consultation::MalformedReply,
     };
-    let map = match object_map(&value) {
-        Some(map) => map,
+    let pairs = match object_pairs(&value) {
+        Some(pairs) => pairs,
         None => return Consultation::MalformedReply,
     };
-    let model_name = match map.get("model") {
+    let model_name = match field_opt(pairs, "model") {
         Some(Value::Str(text)) => (*text).clone(),
         _ => return Consultation::MalformedReply,
     };
     if model_name != pinned {
         return Consultation::MalformedReply;
     }
-    let choice = match map.get("choice") {
-        Some(value) => match object_map(value) {
-            Some(map) => map,
+    let choice = match field_opt(pairs, "choice") {
+        Some(value) => match object_pairs(value) {
+            Some(pairs) => pairs,
             None => return Consultation::MalformedReply,
         },
         None => return Consultation::MalformedReply,
     };
-    let verdict = match choice.get("label") {
+    let verdict = match field_opt(choice, "label") {
         Some(Value::Null) => {
             // An abstention is a well formed reply that
             // reports no decision under DM-16, so a confidence
             // or a score standing outside its declared range
             // makes the reply malformed even here, where no
             // verdict stands to carry them.
-            if let Some(value) = choice.get("confidence") {
+            if let Some(value) = field_opt(choice, "confidence") {
                 if model_number_unit(value).is_none() {
                     return Consultation::MalformedReply;
                 }
             }
-            if let Some(value) = map.get("score") {
-                let level_ok = match object_map(value) {
-                    Some(score_map) => matches!(
-                        score_map.get("level"),
+            if let Some(value) = field_opt(pairs, "score") {
+                let level_ok = match object_pairs(value) {
+                    Some(score_pairs) => matches!(
+                        field_opt(score_pairs, "level"),
                         Some(Value::Int(level)) if (1..=10).contains(level)
                     ),
                     None => false,
@@ -3721,21 +3743,21 @@ pub fn consultation_from_reply_body(body: &str, pinned: &str) -> Consultation {
         },
         _ => return Consultation::MalformedReply,
     };
-    let confidence = match choice.get("confidence") {
+    let confidence = match field_opt(choice, "confidence") {
         Some(value) => match model_number_unit(value) {
             Some(number) => number,
             None => return Consultation::MalformedReply,
         },
         None => return Consultation::MalformedReply,
     };
-    let score_map = match map.get("score") {
-        Some(value) => match object_map(value) {
-            Some(map) => map,
+    let score_pairs = match field_opt(pairs, "score") {
+        Some(value) => match object_pairs(value) {
+            Some(pairs) => pairs,
             None => return Consultation::MalformedReply,
         },
         None => return Consultation::MalformedReply,
     };
-    let level = match score_map.get("level") {
+    let level = match field_opt(score_pairs, "level") {
         Some(Value::Int(level)) if (1..=10).contains(level) => *level,
         _ => return Consultation::MalformedReply,
     };
