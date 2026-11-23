@@ -1565,6 +1565,21 @@ fn parse_stored_instant(value: &Value) -> Result<Instant> {
     }
 }
 
+/// Parse a stored instant field and take the field's text
+/// beside it, the pair the stored readers carry together.
+/// The text extraction cannot fail, and the reason stands
+/// written here at the one seat that performs it:
+/// parse_stored_instant succeeds only on a Str value, so a
+/// parsed instant is text.
+fn parse_stored_instant_text(value: &Value) -> Result<(Instant, String)> {
+    let instant = parse_stored_instant(value)?;
+    let text = value
+        .as_str()
+        .expect("a parsed instant is text")
+        .to_string();
+    Ok((instant, text))
+}
+
 // ----------------------------------------------------------------
 // Value level validation.
 //
@@ -1907,11 +1922,7 @@ fn validate_record(value: &Value, position: usize) -> Result<Record> {
             )))
         }
     };
-    let instant = parse_stored_instant(field(pairs, "at"))?;
-    let at = field(pairs, "at")
-        .as_str()
-        .expect("a parsed instant is text")
-        .to_string();
+    let (instant, at) = parse_stored_instant_text(field(pairs, "at"))?;
     let stage = match field(pairs, "stage") {
         Value::Str(text) if STAGES.contains(&text.as_str()) => text.clone(),
         other => {
@@ -2689,11 +2700,7 @@ fn validate_run(value: &Value) -> Result<Run> {
     };
     let id = validate_stored_name(field(pairs, "id"))?;
     let id_repr = py_repr_str(&id);
-    let registered_instant = parse_stored_instant(field(pairs, "registered_at"))?;
-    let registered_at = field(pairs, "registered_at")
-        .as_str()
-        .expect("a parsed instant is text")
-        .to_string();
+    let (registered_instant, registered_at) = parse_stored_instant_text(field(pairs, "registered_at"))?;
     let proof_interval_seconds = match field(pairs, "proof_interval_seconds").as_json_int() {
         Some(number) if number.cmp_i128(1) != Ordering::Less => number,
         _ => {
@@ -2740,16 +2747,8 @@ fn validate_run(value: &Value) -> Result<Run> {
     let (last_proof_at, last_proof_instant) = match field(pairs, "last_proof_at") {
         Value::Null => (None, None),
         value => {
-            let instant = parse_stored_instant(value)?;
-            (
-                Some(
-                    value
-                        .as_str()
-                        .expect("a parsed instant is text")
-                        .to_string(),
-                ),
-                Some(instant),
-            )
+            let (instant, text) = parse_stored_instant_text(value)?;
+            (Some(text), Some(instant))
         }
     };
     let stage = match field(pairs, "stage") {
