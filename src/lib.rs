@@ -1602,6 +1602,17 @@ pub fn validate_name(value: &Value) -> Result<()> {
     Ok(())
 }
 
+/// The text of a run id validate_name has already judged,
+/// cloned out of its value. Every entry point performs this
+/// extraction after its validation, so the extraction and
+/// the ground of its unreachable arm stand in one place.
+fn run_id_text(run_id: &Value) -> String {
+    match run_id {
+        Value::Str(text) => text.clone(),
+        _ => unreachable!("a validated name is text"),
+    }
+}
+
 fn validate_stored_name(value: &Value) -> Result<String> {
     match value {
         Value::Str(text) if name_shape_ok(text) => Ok(text.clone()),
@@ -4473,10 +4484,7 @@ impl Switch {
                 ));
             }
         }
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.mutate(now, |document| {
             if document.runs.iter().any(|run| run.id == run_id) {
                 return Err(Error::Refusal(format!(
@@ -4512,10 +4520,7 @@ impl Switch {
     pub fn prove(&self, run_id: &Value, note: &Value, now: &Instant) -> Result<()> {
         validate_name(run_id)?;
         validate_note(note)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.mutate(now, |document| {
             let index = Self::require_run(document, &run_id)?;
             let run = &mut document.runs[index];
@@ -4538,10 +4543,7 @@ impl Switch {
     pub fn spend(&self, run_id: &Value, amount: &Value, now: &Instant) -> Result<i64> {
         validate_name(run_id)?;
         let amount = validate_spend_amount(amount)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.mutate(now, |document| {
             let index = Self::require_run(document, &run_id)?;
             let run = &mut document.runs[index];
@@ -4566,10 +4568,7 @@ impl Switch {
     pub fn pull(&self, run_id: &Value, now: &Instant) -> Result<String> {
         validate_name(run_id)?;
         validate_now(now)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.ensure_parent()?;
         let guard = self.locked(true)?;
         let mut document = self.read_document()?;
@@ -4646,10 +4645,7 @@ impl Switch {
     ) -> Result<StageReport> {
         validate_name(run_id)?;
         validate_now(now)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.ensure_parent()?;
         let guard = self.locked(true)?;
         let mut document = self.read_document()?;
@@ -4868,10 +4864,7 @@ impl Switch {
     /// Return the recorded decision log of one run, in order.
     pub fn log(&self, run_id: &Value) -> Result<Vec<Record>> {
         validate_name(run_id)?;
-        let run_id = match run_id {
-            Value::Str(text) => text.clone(),
-            _ => unreachable!("a validated name is text"),
-        };
+        let run_id = run_id_text(run_id);
         self.read(|document| {
             let index = Self::require_run(document, &run_id)?;
             Ok(document.runs[index].log.clone())
