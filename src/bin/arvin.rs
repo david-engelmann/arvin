@@ -23,10 +23,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use arvin::{
-    consultation_from_reply_body, py_float_repr, py_repr_str, timeout_printable, validate_judge_form,
-    Error, FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
-    DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
-    MODEL_NAME,
+    consultation_from_reply_body, py_float_repr, py_repr_str, timeout_printable,
+    validate_judge_form, Error, FixtureTransport, Instant, ModelTransport, Record,
+    SubprocessTransport, Switch, Value, DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT,
+    DEFAULT_PROOF_INTERVAL_SECONDS, MODEL_NAME,
 };
 
 const MAIN_USAGE: &str =
