@@ -17,9 +17,10 @@ Every operation but the log read takes the current instant
 as ISO 8601 text the library parses, exactly as the library
 takes it, and no call reads a clock of its own. The register
 call returns the stored facts of the run it opens, the stage
-call returns the stage name and its reasons, the
-stage_with_model call returns the same report for an
-evaluation that consulted a model, the spend call returns
+call returns the stage name and its reasons and the record
+the evaluation appended, standing null where it appended
+none, the stage_with_model call returns the same report for
+an evaluation that consulted a model, the spend call returns
 the accumulated spend, the pull call returns the stage name,
 and the log call returns the decision records with every
 field they stand in the state file with, the model fields

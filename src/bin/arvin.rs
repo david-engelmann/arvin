@@ -22,8 +22,8 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use arvin::{
-    consultation_from_reply_body, format_instant, py_float_repr, py_printable, py_repr_str, Error,
-    FixtureTransport, Instant, ModelTransport, SubprocessTransport, Switch, Value,
+    consultation_from_reply_body, py_float_repr, py_printable, py_repr_str, validate_judge_form,
+    Error, FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value,
     DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS,
     MODEL_NAME, TIMEOUT_WHOLE_CEILING,
 };
@@ -68,27 +68,28 @@ fn sub_usage(command: &str) -> &'static str {
     }
 }
 
-fn sub_help(command: &str) -> &'static str {
-    match command {
+fn sub_help(command: &str) -> String {
+    let body = match command {
         "register" => {
-            "usage: arvin register [-h] [--proof-interval PROOF_INTERVAL]\n                        [--missed-limit MISSED_LIMIT]\n                        [--soft-ceiling SOFT_CEILING]\n                        [--hard-ceiling HARD_CEILING]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --proof-interval PROOF_INTERVAL\n                        the proof interval in seconds, default 60\n  --missed-limit MISSED_LIMIT\n                        the missed proof limit that warrants kill, default 5\n  --soft-ceiling SOFT_CEILING\n                        the spend at or above which cut budget is warranted\n  --hard-ceiling HARD_CEILING\n                        the spend at or above which kill is warranted"
         }
         "prove" => {
-            "usage: arvin prove [-h] [--note NOTE] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help   show this help message and exit\n  --note NOTE  a short progress note, never judged"
         }
         "spend" => {
-            "usage: arvin spend [-h] --amount AMOUNT run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help       show this help message and exit\n  --amount AMOUNT  the spend to add, in host units"
         }
         "pull" => {
-            "usage: arvin pull [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
         "stage" => {
-            "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--host-context HOST_CONTEXT]\n                        run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
         }
         _ => {
-            "usage: arvin log [-h] run\n\npositional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
-    }
+    };
+    format!("{}\n\n{}", sub_usage(command), body)
 }
 
 fn value_options(command: &str) -> &'static [&'static str] {
@@ -499,48 +500,48 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
     Ok(result)
 }
 
+/// The values recorded under one option name, in the order
+/// the caller named them. The option readers state their
+/// direction and their projection over this one scan, so the
+/// name matching stands in one place.
+fn option_values<'a>(args: &'a SubArgs, name: &str) -> Vec<&'a SubValue> {
+    args.options
+        .iter()
+        .filter(|(seen, _)| seen == name)
+        .map(|(_, value)| value)
+        .collect()
+}
+
 fn option_text<'a>(args: &'a SubArgs, name: &str) -> Option<&'a str> {
-    args.options.iter().rev().find_map(|(seen, value)| {
-        if seen == name {
-            match value {
-                SubValue::Text(text) => Some(text.as_str()),
-                SubValue::Int(_) => None,
-            }
-        } else {
-            None
-        }
-    })
+    option_values(args, name)
+        .into_iter()
+        .rev()
+        .find_map(|value| match value {
+            SubValue::Text(text) => Some(text.as_str()),
+            SubValue::Int(_) => None,
+        })
 }
 
 /// Every value of a repeatable option, in the order the
 /// caller named them.
 fn option_list<'a>(args: &'a SubArgs, name: &str) -> Vec<&'a str> {
-    args.options
-        .iter()
-        .filter_map(|(seen, value)| {
-            if seen == name {
-                match value {
-                    SubValue::Text(text) => Some(text.as_str()),
-                    SubValue::Int(_) => None,
-                }
-            } else {
-                None
-            }
+    option_values(args, name)
+        .into_iter()
+        .filter_map(|value| match value {
+            SubValue::Text(text) => Some(text.as_str()),
+            SubValue::Int(_) => None,
         })
         .collect()
 }
 
 fn option_int<'a>(args: &'a SubArgs, name: &str) -> Option<&'a Value> {
-    args.options.iter().rev().find_map(|(seen, value)| {
-        if seen == name {
-            match value {
-                SubValue::Int(value) => Some(value),
-                SubValue::Text(_) => None,
-            }
-        } else {
-            None
-        }
-    })
+    option_values(args, name)
+        .into_iter()
+        .rev()
+        .find_map(|value| match value {
+            SubValue::Int(value) => Some(value),
+            SubValue::Text(_) => None,
+        })
 }
 
 fn require(command: &str, args: &SubArgs) -> Result<(), ParserError> {
@@ -584,7 +585,87 @@ fn run() -> ExitCode {
     }
 }
 
+/// The state path is the one argument carried as raw bytes,
+/// because it names a file, as the state option's seat in
+/// dispatch records. Every other argument is read as text,
+/// and an argument that is not valid UTF-8 text is refused
+/// rather than rewritten with replacement characters on its
+/// way into a run id, a proof note, a host context, or a
+/// judge path, the lossy carriage DM-A13 recorded. The scan
+/// walks the raw arguments as dispatch's own state scan
+/// consumes them and exempts exactly the state value, in its
+/// inline form after the first equals sign and in its
+/// following token form. The refusal names the argument by
+/// its position, the only name an undecodable argument has.
+fn first_undecodable_argument(os_argv: &[std::ffi::OsString]) -> Option<usize> {
+    let mut exempt: Vec<bool> = vec![false; os_argv.len()];
+    let mut index = 0;
+    while index < os_argv.len() {
+        let token = os_argv[index].to_string_lossy();
+        if token == "--" {
+            break;
+        }
+        if token == "-h"
+            || token == "--help"
+            || (token.starts_with("-h") && !token.starts_with("--"))
+        {
+            break;
+        }
+        if token.starts_with("--") && token.len() > 2 {
+            let (name, inline_value) = match token.find('=') {
+                Some(pos) => (&token[..pos], true),
+                None => (&token[..], false),
+            };
+            match resolve_long(name, &["--help", "--state"]) {
+                Ok(Some("--state")) => {
+                    if inline_value {
+                        exempt[index] = true;
+                        index += 1;
+                    } else if index + 1 < os_argv.len()
+                        && !is_option_like(&os_argv[index + 1].to_string_lossy())
+                    {
+                        exempt[index] = true;
+                        exempt[index + 1] = true;
+                        index += 2;
+                    } else {
+                        index += 1;
+                    }
+                }
+                Ok(Some(_)) => break,
+                Ok(None) => index += 1,
+                Err(_) => break,
+            }
+            continue;
+        }
+        if is_option_like(&token) {
+            index += 1;
+            continue;
+        }
+        break;
+    }
+    (0..os_argv.len()).find(|&i| !exempt[i] && os_argv[i].to_str().is_none())
+}
+
+/// The current instant in UTC. The command line is the one
+/// clock reader in the repo (CONTRACT DM-6): it reads SystemTime
+/// here and passes the instant in, and the library reads no
+/// wall clock.
+fn now_utc() -> Instant {
+    let micros = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_micros() as i128)
+        .unwrap_or(0);
+    Instant::from_epoch_micros(micros, Some(0))
+}
+
 fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode, Error> {
+    if let Some(index) = first_undecodable_argument(os_argv) {
+        return Ok(parser_fail(
+            MAIN_USAGE,
+            "arvin",
+            &format!("argument {} is not valid UTF-8 text", index + 1),
+        ));
+    }
     // Parse the top level: the state option and the subcommand
     // word, with the remaining tokens handed to the subcommand.
     // A double dash standing where the subcommand word is
@@ -726,7 +807,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
         ));
     }
     let switch = Switch::new(state_path.unwrap());
-    let now = Instant::now_utc();
+    let now = now_utc();
     let run = args.positionals.first().cloned().unwrap_or_default();
     let run_value = Value::Str(run.clone());
     match command.as_str() {
@@ -806,23 +887,12 @@ fn stage_command(
     let judge_args = option_list(args, "--judge-arg");
     let judge_timeout = option_int(args, "--judge-timeout");
     let host_context = option_text(args, "--host-context");
-    if judge.is_some() && fixture_file.is_some() {
-        return Err(Error::InvalidRequest(
-            "exactly one judge form may stand named on one call".to_string(),
-        ));
-    }
-    if judge.is_none() {
-        if !judge_args.is_empty() {
-            return Err(Error::InvalidRequest(
-                "a judge argument stands named with no judge program to carry it".to_string(),
-            ));
-        }
-        if judge_timeout.is_some() {
-            return Err(Error::InvalidRequest(
-                "a judge timeout stands named with no judge program to carry it".to_string(),
-            ));
-        }
-    }
+    validate_judge_form(
+        judge.is_some(),
+        fixture_file.is_some(),
+        !judge_args.is_empty(),
+        judge_timeout.is_some(),
+    )?;
     let timeout = match judge_timeout {
         Some(value) => Some(judge_timeout_duration(value)?),
         None => None,
@@ -846,26 +916,12 @@ fn stage_command(
     } else {
         None
     };
-    // The consultation lines are read from the log the
-    // evaluation leaves behind, identified without trusting
-    // the clock that chose them. The sequence number of the
-    // last record standing before the evaluation is noted, and
-    // the lines print only from a stage record standing
-    // exactly one sequence past it, stamped with the instant
-    // the command passed to the entry point, carrying a
-    // consultation pattern. In the single invocation case
-    // those conditions hold together exactly when the
-    // evaluation appended a consultation record.
-    let noted = switch
-        .log(run_value)
-        .ok()
-        .and_then(|records| records.last().map(|record| record.seq));
     let report = switch.stage_with_model(run_value, now, transport, host_context)?;
     println!("stage {}", report.stage);
     for reason in &report.reasons {
         println!("reason {reason}");
     }
-    if let Some(lines) = consultation_lines(switch, run_value, noted, now) {
+    if let Some(lines) = report.appended.as_ref().and_then(consultation_lines) {
         for line in lines {
             println!("{line}");
         }
@@ -931,27 +987,18 @@ fn read_judge_fixture(path: &str) -> Result<String, Error> {
 }
 
 /// The consultation lines the stage command prints after its
-/// stage and reason lines, read from the record the evaluation
-/// appended, or nothing where the record standing last is not
-/// that record or carries no consultation. The confidence and
-/// the score render by the library float rendering the
-/// document writer uses, so the printed numbers and the stored
-/// fields cannot disagree.
-fn consultation_lines(
-    switch: &Switch,
-    run_value: &Value,
-    noted: Option<u64>,
-    now: &Instant,
-) -> Option<Vec<String>> {
-    let noted = noted?;
-    let records = switch.log(run_value).ok()?;
-    let record = records.last()?;
-    if record.kind != "stage" || record.seq != noted + 1 {
-        return None;
-    }
-    if record.at != format_instant(now).ok()? {
-        return None;
-    }
+/// stage and reason lines, read from the record the
+/// evaluation handed back in its report, or nothing where
+/// that record carries no consultation. Only a consultation
+/// record carries a model name, so the model fields of the
+/// record are the whole identification, read off the record
+/// the evaluation itself appended inside its lock, and no
+/// second reading of the state and no reconstruction after
+/// the fact stands between the evaluation and its lines.
+/// The confidence and the score render by the library float
+/// rendering the document writer uses, so the printed
+/// numbers and the stored fields cannot disagree.
+fn consultation_lines(record: &Record) -> Option<Vec<String>> {
     let model = record.model_name.as_ref()?;
     if let Some(class) = &record.fallback_taken {
         Some(vec![format!("model {model}"), format!("fallback {class}")])
