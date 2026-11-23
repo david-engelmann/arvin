@@ -437,7 +437,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                 || token == "--help"
                 || (token.starts_with("-h") && !token.starts_with("--")))
         {
-            print_line(sub_help(command));
+            print_line(&sub_help(command));
             std::process::exit(0);
         }
         if !after_separator && token.starts_with("--") && token.len() > 2 {
@@ -457,7 +457,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
                             ),
                         ));
                     }
-                    print_line(sub_help(command));
+                    print_line(&sub_help(command));
                     std::process::exit(0);
                 }
                 Ok(Some(option)) => {
