@@ -688,9 +688,7 @@ fn now_utc() -> Result<Instant, Error> {
 /// clock never gave (perfection finding DM-P8): the read
 /// answers a failure naming the case, at the failure exit,
 /// instead of the epoch the standing form fabricated.
-fn instant_from_read(
-    read: Result<Duration, std::time::SystemTimeError>,
-) -> Result<Instant, Error> {
+fn instant_from_read(read: Result<Duration, std::time::SystemTimeError>) -> Result<Instant, Error> {
     read.map(|elapsed| Instant::from_epoch_micros(elapsed.as_micros() as i128, Some(0)))
         .map_err(|_| Error::Failure("the system clock stands before the epoch".to_string()))
 }
@@ -1039,14 +1037,15 @@ fn consultation_lines(record: &Record) -> Option<Vec<String>> {
 fn main() -> ExitCode {
     run()
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_clock_standing_before_the_epoch_answers_the_failure() {
-        let read = (std::time::UNIX_EPOCH - Duration::from_secs(1))
-            .duration_since(std::time::UNIX_EPOCH);
+        let read =
+            (std::time::UNIX_EPOCH - Duration::from_secs(1)).duration_since(std::time::UNIX_EPOCH);
         assert!(read.is_err());
         let error = instant_from_read(read).unwrap_err();
         assert!(matches!(error, Error::Failure(_)));
@@ -1058,8 +1057,8 @@ mod tests {
     fn a_clock_at_or_after_the_epoch_builds_its_instant() {
         let at_epoch = instant_from_read(Ok(Duration::ZERO)).expect("the epoch read builds");
         assert_eq!(at_epoch.epoch_micros(), 0);
-        let after = instant_from_read(Ok(Duration::from_micros(90_000_000)))
-            .expect("a later read builds");
+        let after =
+            instant_from_read(Ok(Duration::from_micros(90_000_000))).expect("a later read builds");
         assert_eq!(after.epoch_micros(), 90_000_000);
     }
 }
