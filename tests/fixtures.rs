@@ -171,6 +171,45 @@ fn the_fixtures_match_their_hash_inventory() {
 }
 
 #[test]
+fn the_manifest_inventory_matches_the_code_inventory() {
+    let manifest = std::fs::read_to_string(fixtures_dir().join("MANIFEST.md"))
+        .expect("the manifest stands");
+    let mut recorded: Vec<(&str, &str, usize)> = Vec::new();
+    for line in manifest.lines() {
+        let Some(rest) = line.strip_prefix("- ") else {
+            continue;
+        };
+        let Some((name, rest)) = rest.split_once(", sha256 ") else {
+            continue;
+        };
+        let Some((sha256, size)) = rest.split_once(", ") else {
+            continue;
+        };
+        let Some(size) = size.strip_suffix(" bytes") else {
+            continue;
+        };
+        recorded.push((
+            name,
+            sha256,
+            size.parse().expect("the recorded size is a number"),
+        ));
+    }
+    assert_eq!(
+        recorded.len(),
+        INVENTORY.len(),
+        "the manifest records the same number of fixtures as the code inventory"
+    );
+    for (position, (recorded_entry, code_entry)) in
+        recorded.iter().zip(INVENTORY.iter()).enumerate()
+    {
+        assert_eq!(
+            recorded_entry, code_entry,
+            "the manifest entry at position {position} matches the code inventory"
+        );
+    }
+}
+
+#[test]
 fn fixture_logs_match_the_record() {
     let expected: [(&str, &[&str]); 9] = [
         (
