@@ -24,7 +24,7 @@ use crate::validate::{
 };
 use crate::value::{corrupt, py_repr_str, Error, JsonInt, Result, Value};
 use crate::vignette::render_vignette;
-use crate::writer::write_document;
+use crate::writer::{json_int_value, write_document};
 use crate::{
     ANCESTRY_BELOW_BAR, DE_ESCALATION_BAR, ESCALATION_BAR, HOST_CONTEXT_MAX, LOCK_SUFFIX,
     SPEND_MAX, STAGES,
@@ -92,6 +92,21 @@ fn has_non_dir_ancestor(path: &std::path::Path) -> bool {
         ancestor = dir.parent();
     }
     false
+}
+
+/// The standing summary of one registered run under DM-25.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunSummary {
+    pub id: String,
+    pub registered_at: String,
+    pub proof_interval_seconds: Value,
+    pub missed_proof_limit: i64,
+    pub soft_ceiling: Option<i64>,
+    pub hard_ceiling: Option<i64>,
+    pub spend_total: i64,
+    pub last_proof_at: Option<String>,
+    pub stage: String,
+    pub killed: bool,
 }
 
 /// One staged cutoff in one state file, opened fresh on every
@@ -798,6 +813,28 @@ impl Switch {
         self.read(|document| {
             let index = Self::require_run(document, &run_id)?;
             Ok(document.runs[index].log.clone())
+        })
+    }
+
+    /// Return the standing summary of every run in registration order.
+    pub fn runs(&self) -> Result<Vec<RunSummary>> {
+        self.read(|document| {
+            Ok(document
+                .runs
+                .iter()
+                .map(|run| RunSummary {
+                    id: run.id.clone(),
+                    registered_at: run.registered_at.clone(),
+                    proof_interval_seconds: json_int_value(&run.proof_interval_seconds),
+                    missed_proof_limit: run.missed_proof_limit,
+                    soft_ceiling: run.soft_ceiling,
+                    hard_ceiling: run.hard_ceiling,
+                    spend_total: run.spend_total,
+                    last_proof_at: run.last_proof_at.clone(),
+                    stage: run.stage.clone(),
+                    killed: run.killed,
+                })
+                .collect())
         })
     }
 }
