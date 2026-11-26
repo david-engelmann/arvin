@@ -17,7 +17,6 @@
 //! the Python runtime before the port was written.
 
 use std::io::Write;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -693,6 +692,32 @@ fn instant_from_read(read: Result<Duration, std::time::SystemTimeError>) -> Resu
         .map_err(|_| Error::Failure("the system clock stands before the epoch".to_string()))
 }
 
+fn inline_os_after_equals(arg: &std::ffi::OsStr) -> std::ffi::OsString {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let raw = arg.as_bytes();
+        let at = raw.iter().position(|byte| *byte == b'=').unwrap();
+        std::ffi::OsString::from_vec(raw[at + 1..].to_vec())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let wide: Vec<u16> = arg.encode_wide().collect();
+        let at = wide
+            .iter()
+            .position(|unit| *unit == u16::from(b'='))
+            .unwrap();
+        std::ffi::OsString::from_wide(&wide[at + 1..])
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let text = arg.to_string_lossy();
+        let (_, rest) = text.split_once('=').unwrap();
+        std::ffi::OsString::from(rest)
+    }
+}
+
 fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode, Error> {
     if let Some(index) = first_undecodable_argument(os_argv) {
         return Ok(parser_fail(
@@ -754,11 +779,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                         // argument bytes, so a state path that is
                         // not valid UTF-8 names the file the caller
                         // named, as the Python surface names it.
-                        let raw = os_argv[index].as_bytes();
-                        let at = raw.iter().position(|byte| *byte == b'=').unwrap();
-                        state_path = Some(PathBuf::from(std::ffi::OsString::from_vec(
-                            raw[at + 1..].to_vec(),
-                        )));
+                        state_path = Some(PathBuf::from(inline_os_after_equals(&os_argv[index])));
                         index += 1;
                     } else if index + 1 < argv.len() && !is_option_like(&argv[index + 1]) {
                         state_path = Some(PathBuf::from(os_argv[index + 1].clone()));

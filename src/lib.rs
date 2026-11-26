@@ -4012,9 +4012,17 @@ impl SubprocessTransport {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(_) => return Consultation::CallFailed,
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::ExecutableFileBusy
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(_) => return Consultation::CallFailed,
+            }
         };
         let mut stdout = child.stdout.take().expect("stdout is piped");
         // The reply is drained on its own thread so a helper
@@ -4168,16 +4176,27 @@ impl LockGuard {
     /// Whether the file this guard holds is the file standing
     /// at the lock path now.
     fn identity_holds(&self) -> bool {
-        use std::os::unix::fs::MetadataExt;
-        let held = match self.file.metadata() {
-            Ok(metadata) => metadata,
-            Err(_) => return false,
-        };
-        let standing = match std::fs::metadata(&self.lock_path) {
-            Ok(metadata) => metadata,
-            Err(_) => return false,
-        };
-        held.dev() == standing.dev() && held.ino() == standing.ino()
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let held = match self.file.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => return false,
+            };
+            let standing = match std::fs::metadata(&self.lock_path) {
+                Ok(metadata) => metadata,
+                Err(_) => return false,
+            };
+            held.dev() == standing.dev() && held.ino() == standing.ino()
+        }
+        #[cfg(not(unix))]
+        {
+            // On Windows, Switch::locked opens the lock file without
+            // FILE_SHARE_DELETE so the operating system prevents
+            // unlinking or renaming while the handle stands open.
+            let _ = (&self.file, &self.lock_path);
+            true
+        }
     }
 
     /// Refuse to go on when the held lock is not the file at
@@ -4196,6 +4215,20 @@ impl LockGuard {
             )))
         }
     }
+}
+
+fn has_non_dir_ancestor(path: &std::path::Path) -> bool {
+    let mut ancestor = path.parent();
+    while let Some(dir) = ancestor {
+        if dir.as_os_str().is_empty() {
+            break;
+        }
+        if let Ok(meta) = std::fs::metadata(dir) {
+            return !meta.is_dir();
+        }
+        ancestor = dir.parent();
+    }
+    false
 }
 
 /// One staged cutoff in one state file, opened fresh on every
@@ -4223,7 +4256,6 @@ impl Switch {
     }
 
     fn locked(&self, exclusive: bool) -> Result<LockGuard> {
-        use std::os::unix::fs::OpenOptionsExt;
         // The identity of the locked file is checked as soon as
         // the lock stands. A mismatch means the file at the path
         // was deleted and replaced under this command, so the
@@ -4231,18 +4263,23 @@ impl Switch {
         // instead of working under a file no other command can
         // see, and refuses when the path will not settle.
         for attempt in 1..=5 {
-            let file = OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o644)
-                .open(&self.lock_path)
-                .map_err(|err| {
-                    Error::Failure(format!(
-                        "the lock file beside the state file cannot be opened, {err}"
-                    ))
-                })?;
+            let mut options = OpenOptions::new();
+            options.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o644);
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                options.share_mode(0x00000001 | 0x00000002);
+            }
+            let file = options.open(&self.lock_path).map_err(|err| {
+                Error::Failure(format!(
+                    "the lock file beside the state file cannot be opened, {err}"
+                ))
+            })?;
             let result = if exclusive {
                 file.lock_exclusive()
             } else {
@@ -4279,7 +4316,12 @@ impl Switch {
     fn read_document(&self) -> Result<Document> {
         let raw = match std::fs::read(&self.path) {
             Ok(raw) => raw,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(empty_document()),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::NotFound
+                    && !has_non_dir_ancestor(&self.path) =>
+            {
+                return Ok(empty_document());
+            }
             Err(err) => return Err(corrupt(format!("the state file cannot be read, {err}"))),
         };
         let value = parse_document(&raw).map_err(|failure| match failure {
@@ -4394,7 +4436,12 @@ impl Switch {
         // DM-8 seats, and never as an absent file.
         let absent = match std::fs::metadata(&self.path) {
             Ok(_) => false,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(err)
+                if err.kind() == std::io::ErrorKind::NotFound
+                    && !has_non_dir_ancestor(&self.path) =>
+            {
+                true
+            }
             Err(err) => return Err(corrupt(format!("the state file cannot be read, {err}"))),
         };
         if absent {

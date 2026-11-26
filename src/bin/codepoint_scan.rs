@@ -27,12 +27,13 @@
 //! report success for a scan of one of them. The report is
 //! assembled and written once through a checked writer, and
 //! a failed write answers a scan error at exit 2 rather than
-//! escaping as a panic. Two limits of the walk stand named
-//! rather than fixed, exactly as they stood under
-//! the setup scanner. A directory that stands in the tree only as
-//! a symlink is not descended into, so the files beneath it pass
-//! unscanned, and a FIFO standing in the tree blocks the read that
-//! reaches it.
+//! escaping as a panic. A special file, a pipe or a socket or a
+//! device, is never collected, and neither is a link whose
+//! target is not a regular file, so debris standing in a scanned
+//! tree can neither hang the scan on a read that never ends nor
+//! fail it on a read that cannot start. A directory that stands
+//! in the tree only as a symlink is not descended into, so the
+//! files beneath it pass unscanned.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -78,8 +79,17 @@ fn collect(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), ScanError> {
             .map_err(|err| ScanError(format!("cannot read {}, {err}", path.display())))?;
         if file_type.is_dir() {
             dirs.push(path);
-        } else if !file_type.is_symlink() || !path.is_dir() {
+        } else if file_type.is_file() {
             files.push(path);
+        } else if file_type.is_symlink() {
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_file() => files.push(path),
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(ScanError(format!("cannot read {}, {err}", path.display())));
+                }
+            }
         }
     }
     dirs.sort();
@@ -113,8 +123,15 @@ fn scan(root: &Path) -> Result<(usize, usize, String), ScanError> {
         let text = std::str::from_utf8(&bytes).map_err(|err| {
             ScanError(format!("cannot decode {} as UTF-8, {err}", path.display()))
         })?;
-        let file_em = text.matches(EM_DASH).count();
-        let file_en = text.matches(EN_DASH).count();
+        let mut file_em = 0;
+        let mut file_en = 0;
+        for ch in text.chars() {
+            if ch == EM_DASH {
+                file_em += 1;
+            } else if ch == EN_DASH {
+                file_en += 1;
+            }
+        }
         if file_em > 0 || file_en > 0 {
             report.push_str(&format!(
                 "{}: em dash {file_em}, en dash {file_en}\n",
