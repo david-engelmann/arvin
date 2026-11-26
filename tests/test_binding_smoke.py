@@ -1056,10 +1056,12 @@ def test_stage_with_model_judge_args_tuple_reaches_the_helper(
     marker = tmp_path / "args.txt"
     # Portability adaptation stages a batch helper on Windows so judge_args
     # forwarding is exercised without requiring POSIX sh.
+    # Mechanical consequence of DM-24 advancing default subprocess model
+    # from jev-1.13.0 to jev-1.14.0.
     if os.name == "nt":
         reply_file = tmp_path / "reply.json"
         reply_file.write_text(
-            '{"model": "jev-1.13.0", "choice": '
+            '{"model": "jev-1.14.0", "choice": '
             '{"label": "hold", "confidence": 0.5}, "score": '
             '{"level": 5}}'
         )
@@ -1074,7 +1076,7 @@ def test_stage_with_model_judge_args_tuple_reaches_the_helper(
         helper.write_text(
             "#!/bin/sh\n"
             f"printf '%s %s' \"$1\" \"$2\" > \"{marker}\"\n"
-            "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
+            "printf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": "
             "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
             "{\"level\": 5}}'\n"
         )
@@ -1089,7 +1091,7 @@ def test_stage_with_model_judge_args_tuple_reaches_the_helper(
     appended = record(3, "stage", T_WARN, "warn", ["missed proofs"])
     appended.update(
         {
-            "model_name": "jev-1.13.0",
+            "model_name": "jev-1.14.0",
             "model_verdict": "hold",
             "model_confidence": 0.5,
             "model_score": 4 / 9,
@@ -1123,10 +1125,11 @@ def test_stage_with_model_accepts_the_widest_judge_timeout(tmp_path):
     marker = tmp_path / "payload-path.txt"
     # Portability adaptation so Windows hosts stage an executable batch helper
     # that writes the marker and prints a valid reply if erroneously spawned.
+    # Mechanical consequence of DM-24 updates helper replies to jev-1.14.0.
     if os.name == "nt":
         reply_file = tmp_path / "reply.json"
         reply_file.write_text(
-            '{"model": "jev-1.13.0", "choice": '
+            '{"model": "jev-1.14.0", "choice": '
             '{"label": "hold", "confidence": 0.5}, "score": '
             '{"level": 5}}'
         )
@@ -1141,7 +1144,7 @@ def test_stage_with_model_accepts_the_widest_judge_timeout(tmp_path):
         helper.write_text(
             "#!/bin/sh\n"
             f"printf '%s' \"$2\" > \"{marker}\"\n"
-            "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
+            "printf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": "
             "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
             "{\"level\": 5}}'\n"
         )
@@ -1215,3 +1218,227 @@ def test_binding_log_records_carry_the_ancestry_field(tmp_path):
     )
     assert run["log"][-2]["model_ancestry"] is None
     assert "streak_ancestry" not in run
+
+
+def test_dm24_constants_callable_transport_and_provider_codecs(tmp_path):
+    assert arvin.MODEL_NAME == "jev-1.14.0"
+    assert arvin.LEGACY_MODEL_NAME == "jev-1.13.0"
+    assert arvin.JUDGE_MODELS == (
+        "jev-1.14.0",
+        "jev-1.13.0",
+        "gemini-decision-1",
+        "gpt-6-luna",
+        "gpt-oss-safeguard-120b",
+        "gpt-oss-safeguard-20b",
+        "pplx-decider-v1.3",
+        "pplx-decider-latest",
+        "pplx-decider-flash-v1.3",
+        "pplx-decider-flash-latest",
+        "@cf/cloudflare/clef",
+        "@cf/cloudflare/clef-flash",
+        "clef",
+        "clef-flash",
+    )
+    assert arvin.detect_provider("jev-1.14.0") == "typesafe"
+    assert arvin.detect_provider("gemini-decision-1") == "google"
+    assert arvin.detect_provider("gpt-6-luna") == "openai"
+    assert arvin.detect_provider("pplx-decider-v1.3") == "perplexity"
+    assert arvin.detect_provider("@cf/cloudflare/clef") == "cloudflare"
+    assert arvin.detect_provider("clef-preview") == "cloudflare"
+
+    # Callable transport receives the DM-21 payload dict and applies provider normalization.
+    seen_payloads = []
+
+    def google_transport(payload):
+        seen_payloads.append(payload)
+        req_json = arvin.format_provider_request(payload, provider="google")
+        req = json.loads(req_json)
+        assert req["model"] == "gemini-decision-1"
+        assert len(req["questions"]["score"]["criteria"]) == 10
+        raw = json.dumps(
+            {
+                "answers": {
+                    "verdict": {
+                        "choice": "escalate",
+                        "probabilities": {
+                            "hold": 0.1,
+                            "escalate": 0.85,
+                            "de-escalate": 0.03,
+                            "other": 0.02,
+                        },
+                    },
+                    "score": {"expected_score": 4.5},
+                }
+            }
+        )
+        return arvin.normalize_provider_reply(
+            raw, provider="google", model="gemini-decision-1"
+        )
+
+    state = str(tmp_path / "callable.json")
+    seat_at_warn(state)
+    report = arvin.stage_with_model(
+        state,
+        "run-a",
+        T_WARN,
+        judge_model="gemini-decision-1",
+        transport=google_transport,
+    )
+    assert len(seen_payloads) == 1
+    assert seen_payloads[0]["model"] == "gemini-decision-1"
+    assert report["stage"] == "throttle"
+    assert report["appended"]["model_name"] == "gemini-decision-1"
+    assert report["appended"]["model_verdict"] == "escalate"
+    assert report["appended"]["model_confidence"] == 0.85
+    assert report["appended"]["model_score"] == 5 / 9
+
+    # Off-seat call never invokes the callable transport.
+    off_state = str(tmp_path / "off-seat.json")
+    arvin.register(off_state, "run-a", T0)
+    off_called = []
+    off_report = arvin.stage_with_model(
+        off_state,
+        "run-a",
+        T0,
+        transport=lambda p: (off_called.append(p) or ""),
+    )
+    assert off_report["stage"] == "none"
+    assert off_called == []
+
+    # Discriminating 65536-byte cap pin using a valid JSON reply padded with trailing spaces.
+    base_valid = (
+        '{"model": "jev-1.14.0", "choice": {"label": "escalate", '
+        '"confidence": 0.8}, "score": {"level": 6}}'
+    )
+    exact_65536 = base_valid + (" " * (65536 - len(base_valid)))
+    over_65537 = base_valid + (" " * (65537 - len(base_valid)))
+    assert len(exact_65536) == 65536
+    assert len(over_65537) == 65537
+
+    ok_cap_state = str(tmp_path / "cap-ok.json")
+    seat_at_warn(ok_cap_state)
+    ok_cap_report = arvin.stage_with_model(
+        ok_cap_state, "run-a", T_WARN, transport=lambda _p: exact_65536
+    )
+    assert ok_cap_report["stage"] == "throttle"
+    assert ok_cap_report["appended"]["model_verdict"] == "escalate"
+
+    # Same-thread re-entry into the locked state file raises FailureError and lands call failed,
+    # even if the callable unlinks the state path before re-entering.
+    reentry_state = str(tmp_path / "reentry.json")
+    seat_at_warn(reentry_state)
+    reentry_errors = []
+
+    def reentrant_transport(_payload):
+        try:
+            arvin.log(reentry_state, "run-a")
+        except arvin.FailureError as exc:
+            reentry_errors.append(str(exc))
+            raise
+        return base_valid
+
+    reentry_report = arvin.stage_with_model(
+        reentry_state, "run-a", T_WARN, transport=reentrant_transport
+    )
+    assert len(reentry_errors) == 1
+    assert "cannot re-enter" in reentry_errors[0]
+    assert reentry_report["appended"]["fallback_taken"] == "call failed"
+
+    unlink_state = str(tmp_path / "reentry-unlink.json")
+    seat_at_warn(unlink_state)
+    unlink_errors = []
+
+    def unlink_reentrant_transport(_payload):
+        Path(unlink_state).unlink()
+        try:
+            arvin.register(unlink_state, "run-b", T0)
+        except arvin.FailureError as exc:
+            unlink_errors.append(str(exc))
+            raise
+        return base_valid
+
+    unlink_report = arvin.stage_with_model(
+        unlink_state, "run-a", T_WARN, transport=unlink_reentrant_transport
+    )
+    assert len(unlink_errors) == 1
+    assert "cannot re-enter" in unlink_errors[0]
+    assert unlink_report["appended"]["fallback_taken"] == "call failed"
+
+    # Callable failure, silence, unpaired surrogate, grammar invalid, and 65537-byte classifications.
+    for index, (fn, expected_fallback) in enumerate(
+        [
+            (lambda _p: (_ for _ in ()).throw(RuntimeError("boom")), "call failed"),
+            (lambda _p: 12345, "call failed"),
+            (lambda _p: "   ", "silence"),
+            (lambda _p: "\ud800", "malformed reply"),
+            (lambda _p: "not json", "malformed reply"),
+            (lambda _p: over_65537, "malformed reply"),
+        ]
+    ):
+        sub_state = str(tmp_path / f"fb-{index}.json")
+        seat_at_warn(sub_state)
+        fb_report = arvin.stage_with_model(
+            sub_state, "run-a", T_WARN, transport=fn
+        )
+        assert fb_report["stage"] == "warn"
+        assert fb_report["appended"]["model_name"] == "jev-1.14.0"
+        assert fb_report["appended"]["fallback_taken"] == expected_fallback
+
+    # Validation refusals on transport, judge_model, and provider names.
+    refusal_state = str(tmp_path / "refusals.json")
+    seat_at_warn(refusal_state)
+    with pytest.raises(TypeError, match="transport must be callable"):
+        arvin.stage_with_model(refusal_state, "run-a", T_WARN, transport="not-callable")
+    with pytest.raises(arvin.InvalidRequestError, match="no judge or transport"):
+        arvin.stage_with_model(
+            refusal_state, "run-a", T_WARN, judge_model="gemini-decision-1"
+        )
+    with pytest.raises(arvin.InvalidRequestError, match="exactly one judge form"):
+        arvin.stage_with_model(
+            refusal_state,
+            "run-a",
+            T_WARN,
+            fixture={"model_name": "jev-1.14.0", "fallback": "silence"},
+            transport=lambda _p: "",
+        )
+    with pytest.raises(arvin.InvalidRequestError, match="printable ASCII"):
+        arvin.stage_with_model(
+            refusal_state,
+            "run-a",
+            T_WARN,
+            judge_model="bad model",
+            transport=lambda _p: "",
+        )
+    with pytest.raises(arvin.InvalidRequestError, match="unknown decision provider"):
+        arvin.format_provider_request("{}", provider="bogus")
+    with pytest.raises(arvin.InvalidRequestError, match="printable ASCII"):
+        arvin.stage_with_model(
+            refusal_state, "run-a", T_WARN, judge_model="\ud800", transport=lambda _p: ""
+        )
+    with pytest.raises(arvin.InvalidRequestError, match="not valid UTF-8"):
+        arvin.detect_provider("\ud800")
+    with pytest.raises(arvin.InvalidRequestError, match="not valid UTF-8"):
+        arvin.normalize_provider_reply("\ud800")
+    with pytest.raises(arvin.InvalidRequestError, match="not valid UTF-8"):
+        arvin.format_provider_request("\ud800")
+    with pytest.raises(arvin.InvalidRequestError, match="key is not a string"):
+        arvin.format_provider_request({**seen_payloads[0], 1: "non-string-key"})
+    with pytest.raises(arvin.InvalidRequestError, match="non-JSON or non-finite"):
+        arvin.format_provider_request({**seen_payloads[0], "extra": float("nan")})
+    with pytest.raises(arvin.InvalidRequestError, match="not valid UTF-8"):
+        arvin.format_provider_request({**seen_payloads[0], "tuple_surrogate": ("\ud800",)})
+    nested_ok = "leaf"
+    for _ in range(255):
+        nested_ok = [nested_ok]
+    assert arvin.format_provider_request({**seen_payloads[0], "nested": nested_ok})
+    nested_too_deep = [nested_ok]
+    with pytest.raises(arvin.InvalidRequestError, match="nests deeper than 256 levels"):
+        arvin.format_provider_request({**seen_payloads[0], "nested": nested_too_deep})
+    cyclic = dict(seen_payloads[0])
+    cyclic["self"] = cyclic
+    with pytest.raises(arvin.InvalidRequestError, match="nests deeper than 256 levels"):
+        arvin.format_provider_request(cyclic)
+
+
+
+

@@ -130,11 +130,14 @@ def test_recorded_cases_replay_through_the_binding(tmp_path):
         )
         reply_text = (FIXTURES / "replies" / f"{case['id']}.json").read_text()
         helper, capture = write_helper(case_dir, reply_text)
+        # Mechanical consequence of DM-24 advancing default MODEL_NAME to
+        # jev-1.14.0 while keeping the frozen Round 4 corpus byte identical.
         subprocess_report = arvin.stage_with_model(
             subprocess_state,
             run_id,
             at,
             judge=helper,
+            judge_model=recorded["model_name"],
             host_context=context,
         )
 

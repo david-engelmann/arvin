@@ -14,13 +14,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-// Portability adaptation gates OS-specific shell or wide-string pins.
-#[cfg(unix)]
-use arvin::consultation_from_reply_body;
 use arvin::{
-    format_instant, parse_instant, Consultation, Error, FixtureTransport, Instant, ModelTransport,
-    Record, SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR,
-    FORMAT_NAME, MODEL_NAME, STAGES, TRIGGERS,
+    cloudflare_endpoint, consultation_from_reply_body, detect_provider, format_instant,
+    format_provider_request, is_valid_model_id, judge_payload_value, normalize_provider_reply,
+    parse_instant, validate_model_id, wire_model_name, Consultation, DecisionProvider, Error,
+    FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value, Verdict,
+    DE_ESCALATION_BAR, ESCALATION_BAR, FORMAT_NAME, JUDGE_MODELS, LEGACY_MODEL_NAME, MODEL_NAME,
+    STAGES, TRIGGERS,
 };
 
 fn t0() -> Instant {
@@ -2856,7 +2856,10 @@ fn last_record(switch: &Switch) -> Record {
 fn model_bars_stand_as_named_constants() {
     assert_eq!(ESCALATION_BAR, 0.60);
     assert_eq!(DE_ESCALATION_BAR, 0.85);
-    assert_eq!(MODEL_NAME, "jev-1.13.0");
+    // Mechanical consequence of DM-24 advancing default MODEL_NAME to
+    // jev-1.14.0 while preserving LEGACY_MODEL_NAME at jev-1.13.0.
+    assert_eq!(MODEL_NAME, "jev-1.14.0");
+    assert_eq!(LEGACY_MODEL_NAME, "jev-1.13.0");
 }
 
 #[test]
@@ -3811,8 +3814,10 @@ fn model_record_damage_battery() {
         .unwrap();
     let rise_state = state_text(&dir);
     let (head, tail) = split_at_kind(&rise_state, "stage");
+    // Mechanical consequence of DM-24 advancing default MODEL_NAME in
+    // verdict() from jev-1.13.0 to jev-1.14.0.
     let tail = tail
-        .replacen("\"model_name\": \"jev-1.13.0\"", "\"model_name\": null", 1)
+        .replacen("\"model_name\": \"jev-1.14.0\"", "\"model_name\": null", 1)
         .replacen(
             "\"model_verdict\": \"escalate\"",
             "\"model_verdict\": null",
@@ -4313,7 +4318,9 @@ fn writer_renders_the_eleven_key_shape_byte_for_byte() {
     let dir = TestDir::new("ancestry-golden-bytes");
     certified_step_down(&dir);
     let document = state_text(&dir);
-    let consultation = "        {\n          \"seq\": 4,\n          \"kind\": \"stage\",\n          \"at\": \"2031-05-04T12:02:03+00:00\",\n          \"stage\": \"throttle\",\n          \"reasons\": [],\n          \"model_name\": \"jev-1.13.0\",\n          \"model_confidence\": 0.79,\n          \"fallback_taken\": null,\n          \"model_verdict\": \"de-escalate\",\n          \"model_score\": 0.2,\n          \"model_ancestry\": null\n        }";
+    // Mechanical consequence of DM-24 advancing default MODEL_NAME in
+    // certified_step_down() from jev-1.13.0 to jev-1.14.0.
+    let consultation = "        {\n          \"seq\": 4,\n          \"kind\": \"stage\",\n          \"at\": \"2031-05-04T12:02:03+00:00\",\n          \"stage\": \"throttle\",\n          \"reasons\": [],\n          \"model_name\": \"jev-1.14.0\",\n          \"model_confidence\": 0.79,\n          \"fallback_taken\": null,\n          \"model_verdict\": \"de-escalate\",\n          \"model_score\": 0.2,\n          \"model_ancestry\": null\n        }";
     assert!(
         document.contains(consultation),
         "the consultation record renders byte for byte, document was {document}"
@@ -4349,8 +4356,10 @@ fn subprocess(program: PathBuf, timeout: std::time::Duration) -> SubprocessTrans
 fn subprocess_transport_reads_a_verdict_and_removes_its_payload() {
     let dir = TestDir::new("model-subprocess-verdict");
     let marker = dir.path().join("payload-path.txt");
+    // Mechanical consequence of DM-24 advancing SubprocessTransport::new
+    // default model from jev-1.13.0 to jev-1.14.0.
     let body = format!(
-        "#!/bin/sh\ngrep -q \"jev-1.13.0\" \"$2\" || exit 3\ngrep -q \"The run stands at stage\" \"$2\" || exit 3\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"escalate\", \"confidence\": 0.9}}, \"score\": {{\"level\": 7}}}}'\n",
+        "#!/bin/sh\ngrep -q \"jev-1.14.0\" \"$2\" || exit 3\ngrep -q \"The run stands at stage\" \"$2\" || exit 3\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.14.0\", \"choice\": {{\"label\": \"escalate\", \"confidence\": 0.9}}, \"score\": {{\"level\": 7}}}}'\n",
         marker.display()
     );
     let helper = write_helper(&dir, "verdict.sh", &body);
@@ -4376,9 +4385,11 @@ fn subprocess_transport_reads_a_verdict_and_removes_its_payload() {
 #[test]
 fn subprocess_transport_classes() {
     let dir = TestDir::new("model-subprocess-classes");
+    // Mechanical consequence of DM-24 advancing SubprocessTransport::new
+    // default model from jev-1.13.0 to jev-1.14.0.
     let cases: Vec<(&str, Consultation)> = vec![
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": null}}'\n",
             Consultation::Abstention {
                 model_name: MODEL_NAME.to_string(),
             },
@@ -4387,7 +4398,7 @@ fn subprocess_transport_classes() {
         ("#!/bin/sh\nexit 2\n", Consultation::CallFailed),
         ("#!/bin/sh\nprintf 'not json'\n", Consultation::MalformedReply),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}}{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": null}}{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": null}}'\n",
             Consultation::MalformedReply,
         ),
         (
@@ -4395,29 +4406,29 @@ fn subprocess_transport_classes() {
             Consultation::MalformedReply,
         ),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 1.5}, \"score\": {\"level\": 5}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 1.5}, \"score\": {\"level\": 5}}'\n",
             Consultation::MalformedReply,
         ),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null, \"confidence\": 1.5}, \"score\": {\"level\": 5}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": null, \"confidence\": 1.5}, \"score\": {\"level\": 5}}'\n",
             Consultation::MalformedReply,
         ),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null}, \"score\": {\"level\": 11}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": null}, \"score\": {\"level\": 11}}'\n",
             Consultation::MalformedReply,
         ),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null, \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": null, \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
             Consultation::Abstention {
                 model_name: MODEL_NAME.to_string(),
             },
         ),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 11}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 11}}'\n",
             Consultation::MalformedReply,
         ),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 1}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 1}}'\n",
             Consultation::Verdict {
                 model_name: MODEL_NAME.to_string(),
                 verdict: Verdict::Hold,
@@ -4426,7 +4437,7 @@ fn subprocess_transport_classes() {
             },
         ),
         (
-            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 10}}'\n",
+            "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 10}}'\n",
             Consultation::Verdict {
                 model_name: MODEL_NAME.to_string(),
                 verdict: Verdict::Hold,
@@ -4473,10 +4484,12 @@ fn subprocess_transport_bounds_the_reader_wait() {
     // the bounded wait, so the call fails inside that wait
     // and not at the end of the pipe.
     let dir = TestDir::new("model-subprocess-held-pipe");
+    // Mechanical consequence of DM-24 advancing SubprocessTransport::new
+    // default model from jev-1.13.0 to jev-1.14.0.
     let helper = write_helper(
         &dir,
         "held.sh",
-        "#!/bin/sh\nsleep 3 &\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
+        "#!/bin/sh\nsleep 3 &\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
     );
     let transport = subprocess(helper, std::time::Duration::from_secs(10));
     let started = std::time::Instant::now();
@@ -4492,13 +4505,14 @@ fn subprocess_transport_refuses_a_timeout_it_cannot_add() {
     // helper never runs and writes no marker. Portability
     // adaptation stages a batch helper on Windows so an
     // accidental spawn writes the marker on Windows too.
+    // Mechanical consequence of DM-24 updates helper replies to jev-1.14.0.
     let dir = TestDir::new("model-subprocess-wide-timeout");
     let marker = dir.path().join("payload-path.txt");
     // Portability adaptation gates OS-specific shell or wide-string pins.
     #[cfg(unix)]
     let helper = {
         let body = format!(
-            "#!/bin/sh\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+            "#!/bin/sh\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.14.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
             marker.display()
         );
         write_helper(&dir, "verdict.sh", &body)
@@ -4509,7 +4523,7 @@ fn subprocess_transport_refuses_a_timeout_it_cannot_add() {
         let reply = dir.path().join("reply.json");
         std::fs::write(
             &reply,
-            "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}",
+            "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}",
         )
         .unwrap();
         let body = format!(
@@ -4809,11 +4823,13 @@ fn self_witness(
 #[cfg(unix)]
 #[test]
 fn cli_model_self_witnessing_equivalence() {
+    // Mechanical consequence of DM-24 advancing default CLI judge model
+    // from jev-1.13.0 to jev-1.14.0.
     // A held seat escalate that applies.
     let (record, _, one, two) = self_witness(
         "model-cli-witness-held-escalate",
         build_held_at_wall,
-        "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
+        "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
     );
     assert_eq!(record.model_verdict.as_deref(), Some("escalate"));
     assert_eq!(record.stage, "throttle");
@@ -4822,7 +4838,7 @@ fn cli_model_self_witnessing_equivalence() {
     let (record, _, one, two) = self_witness(
         "model-cli-witness-held-hold",
         build_held_at_wall,
-        "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
+        "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
     );
     assert_eq!(record.model_verdict.as_deref(), Some("hold"));
     assert_eq!(record.stage, "warn");
@@ -4831,7 +4847,7 @@ fn cli_model_self_witnessing_equivalence() {
     let (record, _, one, two) = self_witness(
         "model-cli-witness-fall-de-escalate",
         build_fall_at_wall,
-        "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"de-escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 3}}",
+        "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"de-escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 3}}",
     );
     assert_eq!(record.model_verdict.as_deref(), Some("de-escalate"));
     assert_eq!(record.stage, "warn");
@@ -4869,7 +4885,9 @@ fn cli_model_drive(name: &str, script: &str) -> (String, Record) {
 fn assert_fallback(stdout: &str, record: &Record, class: &str) {
     assert_eq!(stdout.lines().next(), Some("stage warn"), "{stdout}");
     let lines: Vec<&str> = stdout.lines().collect();
-    assert!(lines.contains(&"model jev-1.13.0"), "{stdout}");
+    // Mechanical consequence of DM-24 advancing default CLI judge model
+    // from jev-1.13.0 to jev-1.14.0.
+    assert!(lines.contains(&"model jev-1.14.0"), "{stdout}");
     assert!(
         lines.contains(&format!("fallback {class}").as_str()),
         "{stdout}"
@@ -4927,9 +4945,11 @@ fn cli_model_helper_body_outside_the_grammar_records_malformed_reply() {
 #[cfg(unix)]
 #[test]
 fn cli_model_helper_abstention_records_abstention() {
+    // Mechanical consequence of DM-24 advancing default CLI judge model
+    // from jev-1.13.0 to jev-1.14.0.
     let (stdout, record) = cli_model_drive(
         "model-cli-abstention",
-        "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": null, \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
+        "#!/bin/sh\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": null, \"confidence\": 0.5}, \"score\": {\"level\": 5}}'\n",
     );
     assert_fallback(&stdout, &record, "abstention");
 }
@@ -4978,6 +4998,9 @@ fn cli_model_fixture_file_drives_its_verdict_pattern() {
         .join("replies")
         .join("DM-E01.json");
     let fixture_text = fixture.to_string_lossy().into_owned();
+    // Mechanical consequence of DM-24 advancing default CLI judge model to
+    // jev-1.14.0 while keeping the frozen DM-E01.json reply byte identical
+    // at jev-1.13.0, selected here with --judge-model.
     let (stdout, _) = run_cli(
         &[
             "--state",
@@ -4986,6 +5009,8 @@ fn cli_model_fixture_file_drives_its_verdict_pattern() {
             "run-a",
             "--judge-fixture",
             &fixture_text,
+            "--judge-model",
+            "jev-1.13.0",
         ],
         0,
     );
@@ -5172,11 +5197,12 @@ fn cli_model_stage_off_seat_never_invokes_its_helper() {
     let capture = dir.path().join("payload.json");
     // Portability adaptation stages a batch helper on Windows so an
     // off-seat spawn writes capture on Windows as well as Unix.
+    // Mechanical consequence of DM-24 updates helper replies to jev-1.14.0.
     #[cfg(unix)]
     let helper = write_helper(
         &dir,
         "judge.sh",
-        "#!/bin/sh\ncp \"$3\" \"$1\"\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}'\n",
+        "#!/bin/sh\ncp \"$3\" \"$1\"\nprintf '%s' '{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}'\n",
     );
     // Portability adaptation gates OS-specific shell or wide-string pins.
     #[cfg(windows)]
@@ -5184,7 +5210,7 @@ fn cli_model_stage_off_seat_never_invokes_its_helper() {
         let reply = dir.path().join("reply.json");
         std::fs::write(
             &reply,
-            "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
+            "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
         )
         .unwrap();
         write_helper(
@@ -5295,10 +5321,11 @@ fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_help
     let marker = dir.path().join("helper-ran.txt");
     // Portability adaptation stages a batch helper on Windows so an
     // accidental spawn writes marker on Windows as well as Unix.
+    // Mechanical consequence of DM-24 updates helper replies to jev-1.14.0.
     #[cfg(unix)]
     let helper = {
         let body = format!(
-            "#!/bin/sh\nprintf '%s' 'ran' > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+            "#!/bin/sh\nprintf '%s' 'ran' > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.14.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
             marker.display()
         );
         write_helper(&dir, "judge.sh", &body)
@@ -5309,7 +5336,7 @@ fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_help
         let reply = dir.path().join("reply.json");
         std::fs::write(
             &reply,
-            "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}",
+            "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}",
         )
         .unwrap();
         let body = format!(
@@ -5593,4 +5620,725 @@ fn cli_help_reports_a_failed_output_write() {
     let (code, stderr) = run_cli_stdout_full(&["--help"]);
     assert_eq!(code, 1);
     assert_eq!(stderr, "error: the command's output could not be written\n");
+}
+
+#[test]
+fn dm24_model_catalog_and_identifier_bounds() {
+    assert_eq!(MODEL_NAME, "jev-1.14.0");
+    assert_eq!(LEGACY_MODEL_NAME, "jev-1.13.0");
+    assert_eq!(
+        JUDGE_MODELS,
+        [
+            "jev-1.14.0",
+            "jev-1.13.0",
+            "gemini-decision-1",
+            "gpt-6-luna",
+            "gpt-oss-safeguard-120b",
+            "gpt-oss-safeguard-20b",
+            "pplx-decider-v1.3",
+            "pplx-decider-latest",
+            "pplx-decider-flash-v1.3",
+            "pplx-decider-flash-latest",
+            "@cf/cloudflare/clef",
+            "@cf/cloudflare/clef-flash",
+            "clef",
+            "clef-flash",
+        ]
+    );
+    for &entry in &JUDGE_MODELS {
+        assert!(is_valid_model_id(entry), "{entry}");
+        validate_model_id(entry).expect("every catalog model validates");
+    }
+
+    let max_id = "m".repeat(128);
+    for valid in [
+        "!",
+        "~",
+        max_id.as_str(),
+        "openrouter/openai/gpt-6-luna",
+        "models/gemini-decision-1",
+    ] {
+        assert!(is_valid_model_id(valid), "{valid}");
+        validate_model_id(valid).expect("in-shape identifier validates");
+        SubprocessTransport::with_model(
+            PathBuf::from("helper"),
+            Vec::new(),
+            std::time::Duration::from_secs(5),
+            valid,
+        )
+        .expect("SubprocessTransport::with_model accepts in-shape identifier");
+    }
+
+    let over_max = "m".repeat(129);
+    for invalid in [
+        "",
+        over_max.as_str(),
+        "jev 1.14.0",
+        "jev\n1.14.0",
+        "jev\t1.14.0",
+        "\x7f",
+        "\x1f",
+        "jev-é",
+    ] {
+        assert!(!is_valid_model_id(invalid), "{invalid:?}");
+        let err = validate_model_id(invalid).unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)), "{err:?}");
+        assert_eq!(
+            err.message(),
+            "the judge model identifier must be 1 to 128 printable ASCII non-whitespace characters"
+        );
+        let Err(transport_err) = SubprocessTransport::with_model(
+            PathBuf::from("helper"),
+            Vec::new(),
+            std::time::Duration::from_secs(5),
+            invalid,
+        ) else {
+            panic!("SubprocessTransport::with_model must reject {invalid:?}");
+        };
+        assert!(
+            matches!(transport_err, Error::InvalidRequest(_)),
+            "{transport_err:?}"
+        );
+        assert_eq!(transport_err.message(), err.message());
+    }
+}
+
+#[test]
+fn dm24_provider_wire_codecs_round_trip_all_five_providers() {
+    assert_eq!(detect_provider("jev-1.14.0"), DecisionProvider::TypeSafe);
+    assert_eq!(detect_provider("jev-1.13.0"), DecisionProvider::TypeSafe);
+    assert_eq!(
+        detect_provider("gemini-decision-1"),
+        DecisionProvider::Google
+    );
+    assert_eq!(
+        detect_provider("models/gemini-decision-1"),
+        DecisionProvider::Google
+    );
+    assert_eq!(detect_provider("gpt-6-luna"), DecisionProvider::OpenAi);
+    assert_eq!(
+        detect_provider("gpt-oss-safeguard-120b"),
+        DecisionProvider::OpenAi
+    );
+    assert_eq!(
+        detect_provider("pplx-decider-v1.3"),
+        DecisionProvider::Perplexity
+    );
+    assert_eq!(detect_provider("clef"), DecisionProvider::Cloudflare);
+    assert_eq!(
+        detect_provider("clef-preview"),
+        DecisionProvider::Cloudflare
+    );
+    assert_eq!(
+        detect_provider("@cf/cloudflare/clef-flash"),
+        DecisionProvider::Cloudflare
+    );
+    assert_eq!(
+        detect_provider("custom-gateway-model"),
+        DecisionProvider::TypeSafe
+    );
+    assert_eq!(
+        DecisionProvider::Perplexity.default_endpoint(),
+        "https://api.perplexity.ai/v1/decisions"
+    );
+
+    assert_eq!(
+        wire_model_name(DecisionProvider::Cloudflare, "clef"),
+        "clef"
+    );
+    assert_eq!(
+        wire_model_name(DecisionProvider::Cloudflare, "@cf/cloudflare/clef-flash"),
+        "clef-flash"
+    );
+    assert_eq!(arvin::cloudflare_route_model("clef"), "@cf/cloudflare/clef");
+    assert_eq!(
+        cloudflare_endpoint("synthetic-acct", "clef").unwrap(),
+        "https://api.cloudflare.com/client/v4/accounts/synthetic-acct/ai/run/@cf/cloudflare/clef"
+    );
+    for (bad_acct, bad_model) in [
+        ("", "clef"),
+        ("../zones", "clef"),
+        ("acct?x=1", "clef"),
+        (
+            "synthetic-acct",
+            "cloudflare/../../../../zones/victim/purge_cache",
+        ),
+        ("synthetic-acct", "cloudflare/team#preview"),
+        ("synthetic-acct", "cloudflare/team?x=1"),
+        ("synthetic-acct", "cloudflare/"),
+    ] {
+        assert!(
+            cloudflare_endpoint(bad_acct, bad_model).is_err(),
+            "cloudflare_endpoint must reject ({bad_acct:?}, {bad_model:?})"
+        );
+    }
+    assert_eq!(
+        wire_model_name(DecisionProvider::Google, "models/gemini-decision-1"),
+        "gemini-decision-1"
+    );
+
+    let vignette = "The run stands at stage warn.";
+    let payload_for = |model: &str| -> String {
+        let _ = judge_payload_value(model, vignette);
+        let sample = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join("escalation")
+                .join("requests")
+                .join("DM-E01.json"),
+        )
+        .expect("sample DM-21 request reads");
+        sample.replacen("\"jev-1.13.0\"", &format!("\"{model}\""), 1)
+    };
+
+    for prefix_only in [
+        "typesafe/",
+        "google/",
+        "google/models/",
+        "models/",
+        "openai/",
+        "perplexity/",
+        "cloudflare/",
+    ] {
+        assert!(
+            format_provider_request(&payload_for(prefix_only), None).is_err(),
+            "prefix-only model {prefix_only} must refuse"
+        );
+    }
+
+    // 1. TypeSafe request + half-away-from-zero rounding across odd and even half-integers.
+    let ts_req = format_provider_request(&payload_for("jev-1.14.0"), None).unwrap();
+    assert!(ts_req.contains("\"model\": \"jev-1.14.0\""));
+    assert!(ts_req.contains("\"questions\": {"));
+    for (raw_score, expected_level) in [(0.5, 2.0), (2.5, 4.0), (4.5, 6.0), (6.5, 8.0), (8.5, 10.0)]
+    {
+        let ts_raw = format!(
+            "{{\"model\": \"jev-1.14.0\", \"answers\": {{\"verdict\": {{\"choice\": \"escalate\", \"probabilities\": {{\"hold\": 0.1, \"escalate\": 0.82, \"de-escalate\": 0.05, \"other\": 0.03}}}}, \"score\": {{\"score\": {raw_score}}}}}}}"
+        );
+        let ts_norm = normalize_provider_reply(
+            &ts_raw,
+            Some(DecisionProvider::TypeSafe),
+            Some("jev-1.14.0"),
+        )
+        .unwrap();
+        assert_eq!(
+            consultation_from_reply_body(&ts_norm, "jev-1.14.0"),
+            Consultation::Verdict {
+                model_name: "jev-1.14.0".to_string(),
+                verdict: Verdict::Escalate,
+                confidence: 0.82,
+                score: (expected_level - 1.0) / 9.0,
+            }
+        );
+    }
+
+    // Foreign DM-21 passthrough model and malformed DM-21 shortcut are rejected,
+    // and valid DM-21 passthrough strips extra nested fields from choice and score.
+    let padded_dm21 = normalize_provider_reply(
+        "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.7, \"extra\": \"stripped\"}, \"score\": {\"level\": 5, \"extra\": \"stripped\"}}",
+        Some(DecisionProvider::TypeSafe),
+        Some("jev-1.14.0"),
+    )
+    .unwrap();
+    assert!(!padded_dm21.contains("stripped"), "{padded_dm21}");
+    assert!(normalize_provider_reply(
+        "{\"model\": \"gpt-6-luna\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.7}, \"score\": {\"level\": 5}}",
+        Some(DecisionProvider::TypeSafe),
+        Some("jev-1.14.0")
+    )
+    .is_err());
+    assert!(normalize_provider_reply(
+        "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 1.5}, \"score\": {\"level\": 5}}",
+        Some(DecisionProvider::TypeSafe),
+        Some("jev-1.14.0")
+    )
+    .is_err());
+    assert!(normalize_provider_reply("{}", None, Some("jev-1.14.0")).is_err());
+    assert!(normalize_provider_reply("{\"answers\": {}}", None, Some("jev-1.14.0")).is_err());
+    assert!(normalize_provider_reply("{\"answers\": null}", None, Some("jev-1.14.0")).is_err());
+
+    // 2. Google request (ordered criteria array + input) + weighted score + echoed legend.
+    let g_req = format_provider_request(&payload_for("gemini-decision-1"), None).unwrap();
+    assert!(g_req.contains("\"model\": \"gemini-decision-1\""));
+    assert!(g_req.contains("\"input\":"));
+    assert!(!g_req.contains("\"legend\":"));
+    let g_raw = "{\"answers\": {\"verdict\": {\"choice\": \"de-escalate\", \"confidence\": 0.40, \"probabilities\": {\"hold\": 0.05, \"escalate\": 0.02, \"de-escalate\": 0.91, \"other\": 0.02}}, \"score\": {\"probabilities\": {\"0\": 0.5, \"1\": 0.5, \"2\": 0.0, \"3\": 0.0, \"4\": 0.0, \"5\": 0.0, \"6\": 0.0, \"7\": 0.0, \"8\": 0.0, \"9\": 0.0}, \"legend\": [\"a\", \"b\"]}}}";
+    let g_norm = normalize_provider_reply(
+        g_raw,
+        Some(DecisionProvider::Google),
+        Some("gemini-decision-1"),
+    )
+    .unwrap();
+    assert_eq!(
+        consultation_from_reply_body(&g_norm, "gemini-decision-1"),
+        Consultation::Verdict {
+            model_name: "gemini-decision-1".to_string(),
+            verdict: Verdict::DeEscalate,
+            confidence: 0.91,
+            score: 1.0 / 9.0,
+        }
+    );
+    // Incomplete level sum (0.2 < 0.99) is rejected.
+    assert!(normalize_provider_reply(
+        "{\"answers\": {\"verdict\": {\"choice\": \"hold\", \"probabilities\": {\"hold\": 0.8, \"escalate\": 0.1, \"de-escalate\": 0.05, \"other\": 0.05}}, \"score\": {\"probabilities\": {\"0\": 0.0, \"1\": 0.0, \"2\": 0.0, \"3\": 0.0, \"4\": 0.0, \"5\": 0.0, \"6\": 0.0, \"7\": 0.0, \"8\": 0.0, \"9\": 0.2}}}}",
+        Some(DecisionProvider::Google),
+        Some("gemini-decision-1"),
+    )
+    .is_err());
+
+    // 3. OpenAI request (choices {value, description} + levels {label, description}) + array probabilities precedence over scalar confidence + duplicate verdict rejection.
+    let oa_req = format_provider_request(&payload_for("gpt-6-luna"), None).unwrap();
+    assert!(oa_req.contains("\"model\": \"gpt-6-luna\""));
+    assert!(oa_req.contains("\"value\": \"hold\""));
+    assert!(oa_req.contains("\"levels\":"));
+    let oa_raw = "{\"model\": \"gpt-6-luna\", \"answers\": [{\"type\": \"choice\", \"name\": \"verdict\", \"choice\": \"escalate\", \"confidence\": 0.50, \"probabilities\": [{\"value\": \"hold\", \"probability\": 0.25}, {\"value\": \"escalate\", \"probability\": 0.65}, {\"value\": \"de-escalate\", \"probability\": 0.05}, {\"value\": \"other\", \"probability\": 0.05}]}, {\"type\": \"score\", \"name\": \"score\", \"score\": 0.0}]}";
+    let oa_norm =
+        normalize_provider_reply(oa_raw, Some(DecisionProvider::OpenAi), Some("gpt-6-luna"))
+            .unwrap();
+    assert_eq!(
+        consultation_from_reply_body(&oa_norm, "gpt-6-luna"),
+        Consultation::Verdict {
+            model_name: "gpt-6-luna".to_string(),
+            verdict: Verdict::Escalate,
+            confidence: 0.65,
+            score: 0.0,
+        }
+    );
+    // Missing chosen-label probability cannot fall back to uncalibrated confidence.
+    assert!(normalize_provider_reply(
+        "{\"model\": \"gpt-6-luna\", \"answers\": [{\"name\": \"verdict\", \"choice\": \"escalate\", \"confidence\": 0.99}, {\"name\": \"score\", \"score\": 3.0}]}",
+        Some(DecisionProvider::OpenAi),
+        Some("gpt-6-luna"),
+    )
+    .is_err());
+    // Duplicate verdict items in array reply are rejected.
+    assert!(normalize_provider_reply(
+        "{\"model\": \"gpt-6-luna\", \"answers\": [{\"name\": \"verdict\", \"choice\": \"hold\", \"probabilities\": {\"hold\": 0.8, \"escalate\": 0.1, \"de-escalate\": 0.05, \"other\": 0.05}}, {\"name\": \"verdict\", \"choice\": \"escalate\", \"probabilities\": {\"hold\": 0.1, \"escalate\": 0.8, \"de-escalate\": 0.05, \"other\": 0.05}}, {\"name\": \"score\", \"score\": 3.0}]}",
+        Some(DecisionProvider::OpenAi),
+        Some("gpt-6-luna"),
+    )
+    .is_err());
+    // Out-of-order OpenAI probability array weights by true level index (0.9 * 9 + 0.1 * 0 = 8.1 -> level 9).
+    let oa_reordered = normalize_provider_reply(
+        "{\"model\": \"gpt-6-luna\", \"answers\": [{\"name\": \"verdict\", \"choice\": \"escalate\", \"probabilities\": [{\"value\": \"hold\", \"probability\": 0.1}, {\"value\": \"escalate\", \"probability\": 0.8}, {\"value\": \"de-escalate\", \"probability\": 0.05}, {\"value\": \"other\", \"probability\": 0.05}]}, {\"name\": \"score\", \"probabilities\": [{\"value\": 9, \"label\": \"9\", \"probability\": 0.9}, {\"value\": 0, \"label\": \"0\", \"probability\": 0.1}, {\"value\": 1, \"label\": \"1\", \"probability\": 0.0}, {\"value\": 2, \"label\": \"2\", \"probability\": 0.0}, {\"value\": 3, \"label\": \"3\", \"probability\": 0.0}, {\"value\": 4, \"label\": \"4\", \"probability\": 0.0}, {\"value\": 5, \"label\": \"5\", \"probability\": 0.0}, {\"value\": 6, \"label\": \"6\", \"probability\": 0.0}, {\"value\": 7, \"label\": \"7\", \"probability\": 0.0}, {\"value\": 8, \"label\": \"8\", \"probability\": 0.0}]}]}",
+        Some(DecisionProvider::OpenAi),
+        Some("gpt-6-luna"),
+    )
+    .unwrap();
+    assert_eq!(
+        consultation_from_reply_body(&oa_reordered, "gpt-6-luna"),
+        Consultation::Verdict {
+            model_name: "gpt-6-luna".to_string(),
+            verdict: Verdict::Escalate,
+            confidence: 0.8,
+            score: 8.0 / 9.0,
+        }
+    );
+    // Malformed probability items and 11-key maps are rejected.
+    for bad_probs in [
+        "[{\"value\": \"9\", \"probability\": 1.0}, {\"value\": 0, \"probability\": 0.0}, {\"value\": 1, \"probability\": 0.0}, {\"value\": 2, \"probability\": 0.0}, {\"value\": 3, \"probability\": 0.0}, {\"value\": 4, \"probability\": 0.0}, {\"value\": 5, \"probability\": 0.0}, {\"value\": 6, \"probability\": 0.0}, {\"value\": 7, \"probability\": 0.0}, {\"value\": 8, \"probability\": 0.0}]",
+        "[{\"label\": 9, \"probability\": 1.0}, {\"label\": \"0\", \"probability\": 0.0}, {\"label\": \"1\", \"probability\": 0.0}, {\"label\": \"2\", \"probability\": 0.0}, {\"label\": \"3\", \"probability\": 0.0}, {\"label\": \"4\", \"probability\": 0.0}, {\"label\": \"5\", \"probability\": 0.0}, {\"label\": \"6\", \"probability\": 0.0}, {\"label\": \"7\", \"probability\": 0.0}, {\"label\": \"8\", \"probability\": 0.0}]",
+        "{\"0\": 0.1, \"1\": 0.1, \"2\": 0.1, \"3\": 0.1, \"4\": 0.1, \"5\": 0.1, \"6\": 0.1, \"7\": 0.1, \"8\": 0.1, \"9\": 0.1, \"10\": 0.0}",
+    ] {
+        let bad_reply = format!(
+            "{{\"model\": \"gpt-6-luna\", \"answers\": [{{\"name\": \"verdict\", \"choice\": \"hold\", \"probabilities\": {{\"hold\": 0.8, \"escalate\": 0.1, \"de-escalate\": 0.05, \"other\": 0.05}}}}, {{\"name\": \"score\", \"probabilities\": {bad_probs}}}]}}"
+        );
+        assert!(
+            normalize_provider_reply(
+                &bad_reply,
+                Some(DecisionProvider::OpenAi),
+                Some("gpt-6-luna"),
+            )
+            .is_err(),
+            "bad probabilities {bad_probs} must reject"
+        );
+    }
+
+    // 4. Perplexity abstention via choice "other" with an unscored empty score object omits score cleanly.
+    let px_req = format_provider_request(&payload_for("pplx-decider-v1.3"), None).unwrap();
+    assert!(px_req.contains("\"model\": \"pplx-decider-v1.3\""));
+    let px_raw = "{\"model\": \"pplx-decider-v1.3\", \"answers\": {\"verdict\": {\"choice\": \"other\", \"probabilities\": {\"hold\": 0.2, \"escalate\": 0.2, \"de-escalate\": 0.1, \"other\": 0.5}}, \"score\": {\"type\": \"score\", \"score\": null, \"probabilities\": {}}}}";
+    let px_norm = normalize_provider_reply(
+        px_raw,
+        Some(DecisionProvider::Perplexity),
+        Some("pplx-decider-v1.3"),
+    )
+    .unwrap();
+    assert_eq!(
+        consultation_from_reply_body(&px_norm, "pplx-decider-v1.3"),
+        Consultation::Abstention {
+            model_name: "pplx-decider-v1.3".to_string(),
+        }
+    );
+
+    // 5. Cloudflare short model name clef in request body + Workers AI envelope unwrapping + false/null envelope refusals.
+    let cf_req = format_provider_request(&payload_for("@cf/cloudflare/clef"), None).unwrap();
+    assert!(cf_req.contains("\"model\": \"clef\""));
+    let cf_raw = "{\"success\": true, \"result\": {\"answers\": {\"verdict\": {\"choice\": \"escalate\", \"probabilities\": {\"hold\": 0.1, \"escalate\": 0.88, \"de-escalate\": 0.01, \"other\": 0.01}}, \"score\": {\"score\": 9.0}}}}";
+    let cf_norm = normalize_provider_reply(cf_raw, None, Some("clef")).unwrap();
+    assert_eq!(
+        consultation_from_reply_body(&cf_norm, "clef"),
+        Consultation::Verdict {
+            model_name: "clef".to_string(),
+            verdict: Verdict::Escalate,
+            confidence: 0.88,
+            score: 1.0,
+        }
+    );
+    assert!(normalize_provider_reply(
+        "{\"success\": false, \"errors\": [{\"message\": \"upstream failure\"}]}",
+        Some(DecisionProvider::Cloudflare),
+        Some("clef")
+    )
+    .is_err());
+    assert!(normalize_provider_reply(
+        "{\"success\": true, \"result\": null}",
+        Some(DecisionProvider::Cloudflare),
+        Some("clef")
+    )
+    .is_err());
+}
+
+#[test]
+fn dm24_cli_judge_model_flag_selects_and_validates_models() {
+    let dir = TestDir::new("dm24-cli-judge-model");
+    let switch = cli_switch_at_warn(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let before = state_bytes(&dir);
+
+    // Orphan --judge-model with no judge form refuses at exit 2 without mutating state.
+    let (_, stderr) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge-model",
+            "gemini-decision-1",
+        ],
+        2,
+    );
+    assert!(
+        stderr.contains("a judge model stands named with no judge form to carry it"),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before);
+
+    // Out-of-shape --judge-model refuses at exit 2 without mutating state.
+    let reply_path = dir.path().join("clef-reply.json");
+    std::fs::write(
+        &reply_path,
+        "{\"model\": \"@cf/cloudflare/clef\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.88}, \"score\": {\"level\": 8}}",
+    )
+    .unwrap();
+    let reply_text = reply_path.to_string_lossy().into_owned();
+    let (_, stderr) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge-fixture",
+            &reply_text,
+            "--judge-model",
+            "bad model",
+        ],
+        2,
+    );
+    assert!(
+        stderr.contains(
+            "the judge model identifier must be 1 to 128 printable ASCII non-whitespace characters"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(state_bytes(&dir), before);
+
+    // Valid --judge-fixture with --judge-model @cf/cloudflare/clef lands the named model.
+    let (stdout, _) = run_cli(
+        &[
+            "--state",
+            &state,
+            "stage",
+            "run-a",
+            "--judge-fixture",
+            &reply_text,
+            "--judge-model",
+            "@cf/cloudflare/clef",
+        ],
+        0,
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines.contains(&"stage throttle"), "{stdout}");
+    assert!(lines.contains(&"model @cf/cloudflare/clef"), "{stdout}");
+    let record = last_record(&switch);
+    assert_eq!(record.model_name.as_deref(), Some("@cf/cloudflare/clef"));
+    assert_eq!(record.model_verdict.as_deref(), Some("escalate"));
+
+    // Foreign model mismatch between --judge-model and fixture body lands malformed reply.
+    let dir_mismatch = TestDir::new("dm24-cli-judge-model-mismatch");
+    let switch_mismatch = cli_switch_at_warn(&dir_mismatch);
+    let state_mismatch = state_path(&dir_mismatch).to_string_lossy().into_owned();
+    let (stdout_mismatch, _) = run_cli(
+        &[
+            "--state",
+            &state_mismatch,
+            "stage",
+            "run-a",
+            "--judge-fixture",
+            &reply_text,
+            "--judge-model",
+            "gpt-6-luna",
+        ],
+        0,
+    );
+    let mismatch_lines: Vec<&str> = stdout_mismatch.lines().collect();
+    assert!(
+        mismatch_lines.contains(&"model gpt-6-luna"),
+        "{stdout_mismatch}"
+    );
+    assert!(
+        mismatch_lines.contains(&"fallback malformed reply"),
+        "{stdout_mismatch}"
+    );
+    let mismatch_record = last_record(&switch_mismatch);
+    assert_eq!(mismatch_record.model_name.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(
+        mismatch_record.fallback_taken.as_deref(),
+        Some("malformed reply")
+    );
+
+    // Portability adaptation exercises shell helper forwarding on Unix.
+    #[cfg(unix)]
+    {
+        let dir_sub = TestDir::new("dm24-cli-judge-subprocess-model");
+        let switch_sub = cli_switch_at_warn(&dir_sub);
+        let state_sub = state_path(&dir_sub).to_string_lossy().into_owned();
+        let helper = write_helper(
+            &dir_sub,
+            "gemini-helper.sh",
+            "#!/bin/sh\ngrep -q '\"model\": \"gemini-decision-1\"' \"$2\" || exit 4\nprintf '%s' '{\"model\": \"gemini-decision-1\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.8}, \"score\": {\"level\": 6}}'\n",
+        );
+        let helper_text = helper.to_string_lossy().into_owned();
+        let (stdout_sub, _) = run_cli(
+            &[
+                "--state",
+                &state_sub,
+                "stage",
+                "run-a",
+                "--judge",
+                &helper_text,
+                "--judge-model",
+                "gemini-decision-1",
+            ],
+            0,
+        );
+        assert!(
+            stdout_sub.lines().any(|l| l == "stage throttle"),
+            "{stdout_sub}"
+        );
+        assert!(
+            stdout_sub.lines().any(|l| l == "model gemini-decision-1"),
+            "{stdout_sub}"
+        );
+        assert!(
+            stdout_sub.lines().any(|l| l == "verdict escalate"),
+            "{stdout_sub}"
+        );
+        let sub_rec = last_record(&switch_sub);
+        assert_eq!(sub_rec.stage, "throttle");
+        assert_eq!(sub_rec.model_name.as_deref(), Some("gemini-decision-1"));
+        assert_eq!(sub_rec.model_verdict.as_deref(), Some("escalate"));
+    }
+}
+
+#[test]
+fn dm24_example_decision_judge_dry_run_matches_provider_codecs() {
+    // Portability adaptation probes python3 or python on the host PATH.
+    let python = ["python3", "python"].into_iter().find(|candidate| {
+        Command::new(candidate)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    });
+    let Some(python_bin) = python else {
+        return;
+    };
+    let dir = TestDir::new("dm24-example-dry-run");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("examples")
+        .join("decision_judge.py");
+    let sample = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("escalation")
+            .join("requests")
+            .join("DM-E01.json"),
+    )
+    .unwrap();
+
+    for (provider, model) in [
+        ("typesafe", "jev-1.14.0"),
+        ("google", "gemini-decision-1"),
+        ("openai", "gpt-6-luna"),
+        ("perplexity", "pplx-decider-v1.3"),
+        ("cloudflare", "clef"),
+    ] {
+        let payload_path = dir.path().join(format!("{provider}.json"));
+        let payload = sample.replacen("\"jev-1.13.0\"", &format!("\"{model}\""), 1);
+        std::fs::write(&payload_path, &payload).unwrap();
+        let out = Command::new(python_bin)
+            .arg(&script)
+            .args([
+                "--provider",
+                provider,
+                "--model",
+                model,
+                "--dry-run",
+                "--raw-payload",
+            ])
+            .arg(&payload_path)
+            .env("CLOUDFLARE_ACCOUNT_ID", "synthetic-acct")
+            .output()
+            .expect("decision_judge.py runs");
+        assert!(
+            out.status.success(),
+            "provider {provider} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let expected_prov = DecisionProvider::from_name(provider).unwrap();
+        let rust_wire = format_provider_request(&payload, Some(expected_prov)).unwrap();
+        // Verify exact structural JSON equality between Python dry-run body and Rust codec.
+        let verify_eq = Command::new(python_bin)
+            .args([
+                "-c",
+                "import json, sys; d = json.loads(sys.argv[1]); r = json.loads(sys.argv[2]); assert d['provider'] == sys.argv[3]; assert d['body'] == r, (d['body'], r)",
+                &stdout,
+                &rust_wire,
+                provider,
+            ])
+            .status()
+            .unwrap();
+        assert!(verify_eq.success(), "dry-run body mismatch for {provider}");
+    }
+
+    // Half-away-from-zero parity on 4.5 -> level 6, duplicate-key rejection -> malformed reply,
+    // HTTPS enforcement, and --model mismatch preservation.
+    let ts_payload = dir.path().join("ts-parity.json");
+    std::fs::write(
+        &ts_payload,
+        sample.replacen("\"jev-1.13.0\"", "\"jev-1.14.0\"", 1),
+    )
+    .unwrap();
+    let half_reply = dir.path().join("half.json");
+    std::fs::write(
+        &half_reply,
+        "{\"model\": \"jev-1.14.0\", \"answers\": {\"verdict\": {\"choice\": \"escalate\", \"probabilities\": {\"hold\": 0.1, \"escalate\": 0.8, \"de-escalate\": 0.05, \"other\": 0.05}}, \"score\": {\"expected_score\": 4.5}}}",
+    )
+    .unwrap();
+    let half_out = Command::new(python_bin)
+        .arg(&script)
+        .arg("--offline-reply")
+        .arg(&half_reply)
+        .arg("--raw-payload")
+        .arg(&ts_payload)
+        .output()
+        .unwrap();
+    assert!(half_out.status.success());
+    assert_eq!(
+        consultation_from_reply_body(
+            String::from_utf8_lossy(&half_out.stdout).trim(),
+            "jev-1.14.0"
+        ),
+        Consultation::Verdict {
+            model_name: "jev-1.14.0".to_string(),
+            verdict: Verdict::Escalate,
+            confidence: 0.8,
+            score: 5.0 / 9.0,
+        }
+    );
+
+    let dup_reply = dir.path().join("dup.json");
+    std::fs::write(
+        &dup_reply,
+        "{\"model\": \"jev-1.14.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.9}, \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
+    )
+    .unwrap();
+    let dup_out = Command::new(python_bin)
+        .arg(&script)
+        .arg("--offline-reply")
+        .arg(&dup_reply)
+        .arg("--raw-payload")
+        .arg(&ts_payload)
+        .output()
+        .unwrap();
+    assert!(dup_out.status.success());
+    assert_eq!(
+        consultation_from_reply_body(
+            String::from_utf8_lossy(&dup_out.stdout).trim(),
+            "jev-1.14.0"
+        ),
+        Consultation::MalformedReply
+    );
+
+    // Overriding --model without matching --judge-model stamps the override model so DM-21 rejects the mismatch.
+    let mismatch_out = Command::new(python_bin)
+        .arg(&script)
+        .args(["--model", "gemini-decision-1", "--offline-reply"])
+        .arg(&half_reply)
+        .arg("--raw-payload")
+        .arg(&ts_payload)
+        .output()
+        .unwrap();
+    assert!(mismatch_out.status.success());
+    assert_eq!(
+        consultation_from_reply_body(
+            String::from_utf8_lossy(&mismatch_out.stdout).trim(),
+            "jev-1.14.0"
+        ),
+        Consultation::MalformedReply
+    );
+
+    // Overflowing float 1e500 in offline reply classifies as malformed reply at exit 0.
+    let overflow_reply = dir.path().join("overflow.json");
+    std::fs::write(
+        &overflow_reply,
+        "{\"model\": \"jev-1.14.0\", \"answers\": {\"verdict\": {\"choice\": \"escalate\", \"probabilities\": {\"hold\": 0.1, \"escalate\": 0.8, \"de-escalate\": 0.05, \"other\": 0.05}}, \"score\": {\"score\": 4.0}}, \"extra\": 1e500}",
+    )
+    .unwrap();
+    let overflow_out = Command::new(python_bin)
+        .arg(&script)
+        .arg("--offline-reply")
+        .arg(&overflow_reply)
+        .arg("--raw-payload")
+        .arg(&ts_payload)
+        .output()
+        .unwrap();
+    assert!(overflow_out.status.success());
+    assert_eq!(
+        consultation_from_reply_body(
+            String::from_utf8_lossy(&overflow_out.stdout).trim(),
+            "jev-1.14.0"
+        ),
+        Consultation::MalformedReply
+    );
+
+    for bad_url in [
+        "http://example.com/v1",
+        "https://:443/v1",
+        "https://@example.com/v1",
+        "https://user:pass@example.com/v1",
+    ] {
+        let http_out = Command::new(python_bin)
+            .arg(&script)
+            .args(["--dry-run", "--api-url", bad_url, "--raw-payload"])
+            .arg(&ts_payload)
+            .output()
+            .unwrap();
+        assert!(!http_out.status.success(), "bad url {bad_url} must fail");
+    }
 }
