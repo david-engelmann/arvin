@@ -1440,5 +1440,120 @@ def test_dm24_constants_callable_transport_and_provider_codecs(tmp_path):
         arvin.format_provider_request(cyclic)
 
 
+def test_dm25_runs_binding_summaries_and_reentry_guard(tmp_path):
+    missing_state = tmp_path / "missing.json"
+    assert arvin.runs(str(missing_state)) == []
+    assert not missing_state.exists()
+    assert not (tmp_path / "missing.json.lock").exists()
 
+    state = str(tmp_path / "runs.json")
+    arvin.register(state, "run-a", T0, soft_ceiling=100, hard_ceiling=500)
+    arvin.register(state, "run-b", T_PROOF, proof_interval=120, missed_limit=3)
+    arvin.prove(state, "run-a", T_PROOF, note="ok")
+    arvin.spend(state, "run-a", 125, T_SPEND)
+    arvin.stage(state, "run-a", T_SPEND)
+    arvin.pull(state, "run-b", T_PULL)
 
+    before_bytes = Path(state).read_bytes()
+    summaries = arvin.runs(state)
+    assert Path(state).read_bytes() == before_bytes
+    assert summaries == [
+        {
+            "id": "run-a",
+            "registered_at": T0,
+            "proof_interval_seconds": 60,
+            "missed_proof_limit": 5,
+            "soft_ceiling": 100,
+            "hard_ceiling": 500,
+            "spend_total": 125,
+            "last_proof_at": T_PROOF,
+            "stage": "cut budget",
+            "killed": False,
+        },
+        {
+            "id": "run-b",
+            "registered_at": T_PROOF,
+            "proof_interval_seconds": 120,
+            "missed_proof_limit": 3,
+            "soft_ceiling": None,
+            "hard_ceiling": None,
+            "spend_total": 0,
+            "last_proof_at": None,
+            "stage": "kill",
+            "killed": True,
+        },
+    ]
+    for summary in summaries:
+        assert type(summary["killed"]) is bool
+        assert type(summary["proof_interval_seconds"]) is int
+        assert type(summary["missed_proof_limit"]) is int
+        assert type(summary["spend_total"]) is int
+        if summary["soft_ceiling"] is not None:
+            assert type(summary["soft_ceiling"]) is int
+        if summary["hard_ceiling"] is not None:
+            assert type(summary["hard_ceiling"]) is int
+
+    # Wide >128-bit stored proof_interval_seconds crosses back as an exact Python int.
+    wide_val = 10**60
+    wide_state = tmp_path / "wide.json"
+    wide_state.write_text(
+        json.dumps(
+            {
+                "format": "deadman-state/1",
+                "runs": [
+                    {
+                        "id": "wide-run",
+                        "registered_at": T0,
+                        "proof_interval_seconds": wide_val,
+                        "missed_proof_limit": 5,
+                        "soft_ceiling": None,
+                        "hard_ceiling": None,
+                        "spend_total": 0,
+                        "last_proof_at": None,
+                        "stage": "none",
+                        "clear_streak": 0,
+                        "killed": False,
+                        "log": [
+                            {
+                                "seq": 1,
+                                "kind": "registered",
+                                "at": T0,
+                                "stage": "none",
+                                "reasons": [],
+                                "model_name": None,
+                                "model_confidence": None,
+                                "fallback_taken": None,
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    )
+    wide_runs = arvin.runs(str(wide_state))
+    assert len(wide_runs) == 1
+    assert type(wide_runs[0]["proof_interval_seconds"]) is int
+    assert wide_runs[0]["proof_interval_seconds"] == wide_val
+
+    corrupt_state = tmp_path / "corrupt-runs.json"
+    corrupt_state.write_text("corrupt\n")
+    with pytest.raises(arvin.CorruptError):
+        arvin.runs(str(corrupt_state))
+
+    # Same-thread re-entry into arvin.runs during an active consultation raises FailureError.
+    re_state = str(tmp_path / "reentry-runs.json")
+    seat_at_warn(re_state)
+    re_seen = []
+
+    def runs_reentrant(_payload):
+        try:
+            arvin.runs(re_state)
+        except arvin.FailureError as exc:
+            re_seen.append(str(exc))
+            raise
+        return ""
+
+    rep = arvin.stage_with_model(re_state, "run-a", T_WARN, transport=runs_reentrant)
+    assert len(re_seen) == 1
+    assert "cannot re-enter" in re_seen[0]
+    assert rep["appended"]["fallback_taken"] == "call failed"
