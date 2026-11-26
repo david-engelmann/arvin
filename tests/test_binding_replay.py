@@ -24,6 +24,7 @@ the day the corpus gains one.
 """
 
 import json
+import os
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -86,6 +87,14 @@ def write_helper(directory, reply_text):
     capture = directory / "captured-payload.json"
     reply = directory / "reply.json"
     reply.write_text(reply_text)
+    # Portability adaptation so Windows hosts exercise the same subprocess
+    # replay path through a batch helper without POSIX sh.
+    if os.name == "nt":
+        helper = directory / "helper.bat"
+        helper.write_text(
+            f'@echo off\r\ncopy /Y %2 "{capture}" >NUL\r\ntype "{reply}"\r\n'
+        )
+        return str(helper), capture
     helper = directory / "helper.sh"
     helper.write_text(f'#!/bin/sh\ncp "$2" "{capture}"\ncat "{reply}"\n')
     helper.chmod(0o755)
@@ -95,8 +104,9 @@ def write_helper(directory, reply_text):
 def test_recorded_cases_replay_through_the_binding(tmp_path):
     cases, entries = load_corpus()
     assert len(cases) == 48
-    shell = shutil.which("sh")
-    assert shell is not None
+    if os.name != "nt":
+        shell = shutil.which("sh")
+        assert shell is not None
     for case in cases:
         entry = entries[case["id"]]
         recorded = entry["recorded"]

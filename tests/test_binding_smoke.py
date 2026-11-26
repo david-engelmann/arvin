@@ -98,7 +98,9 @@ def cli_binary():
     if named:
         return named
     target = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
-    binary = target / "debug" / "arvin"
+    # Portability adaptation appends .exe on Windows so Cargo's built binary resolves.
+    exe = "arvin.exe" if os.name == "nt" else "arvin"
+    binary = target / "debug" / exe
     if not binary.exists():
         subprocess.run(
             ["cargo", "build", "--bin", "arvin"],
@@ -1052,15 +1054,31 @@ def test_stage_with_model_judge_args_tuple_reaches_the_helper(
     state = str(tmp_path / "state.json")
     seat_at_warn(state)
     marker = tmp_path / "args.txt"
-    helper = tmp_path / "judge.sh"
-    helper.write_text(
-        "#!/bin/sh\n"
-        f"printf '%s %s' \"$1\" \"$2\" > \"{marker}\"\n"
-        "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
-        "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
-        "{\"level\": 5}}'\n"
-    )
-    helper.chmod(0o755)
+    # Portability adaptation stages a batch helper on Windows so judge_args
+    # forwarding is exercised without requiring POSIX sh.
+    if os.name == "nt":
+        reply_file = tmp_path / "reply.json"
+        reply_file.write_text(
+            '{"model": "jev-1.13.0", "choice": '
+            '{"label": "hold", "confidence": 0.5}, "score": '
+            '{"level": 5}}'
+        )
+        helper = tmp_path / "judge.bat"
+        helper.write_text(
+            "@echo off\r\n"
+            f'<NUL set /p="%1 %2" > "{marker}"\r\n'
+            f'type "{reply_file}"\r\n'
+        )
+    else:
+        helper = tmp_path / "judge.sh"
+        helper.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s %s' \"$1\" \"$2\" > \"{marker}\"\n"
+            "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
+            "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
+            "{\"level\": 5}}'\n"
+        )
+        helper.chmod(0o755)
     report = arvin.stage_with_model(
         state,
         "run-a",
@@ -1103,15 +1121,31 @@ def test_stage_with_model_accepts_the_widest_judge_timeout(tmp_path):
     state = str(tmp_path / "state.json")
     seat_at_warn(state)
     marker = tmp_path / "payload-path.txt"
-    helper = tmp_path / "judge.sh"
-    helper.write_text(
-        "#!/bin/sh\n"
-        f"printf '%s' \"$2\" > \"{marker}\"\n"
-        "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
-        "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
-        "{\"level\": 5}}'\n"
-    )
-    helper.chmod(0o755)
+    # Portability adaptation so Windows hosts stage an executable batch helper
+    # that writes the marker and prints a valid reply if erroneously spawned.
+    if os.name == "nt":
+        reply_file = tmp_path / "reply.json"
+        reply_file.write_text(
+            '{"model": "jev-1.13.0", "choice": '
+            '{"label": "hold", "confidence": 0.5}, "score": '
+            '{"level": 5}}'
+        )
+        helper = tmp_path / "judge.bat"
+        helper.write_text(
+            "@echo off\r\n"
+            f'echo %2 > "{marker}"\r\n'
+            f'type "{reply_file}"\r\n'
+        )
+    else:
+        helper = tmp_path / "judge.sh"
+        helper.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s' \"$2\" > \"{marker}\"\n"
+            "printf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": "
+            "{\"label\": \"hold\", \"confidence\": 0.5}, \"score\": "
+            "{\"level\": 5}}'\n"
+        )
+        helper.chmod(0o755)
     report = arvin.stage_with_model(
         state,
         "run-a",

@@ -273,11 +273,16 @@ fn build_document(case: &Case, dir: &TestDir, name: &str) -> (Switch, PathBuf) {
 }
 
 fn write_helper(dir: &TestDir, name: &str, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.path().join(name);
     std::fs::write(&path, body).expect("the helper is written");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("the helper is executable");
+    // Portability adaptation because POSIX execute bits apply only on Unix,
+    // while Windows dispatches batch helpers by file extension.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the helper is executable");
+    }
     path
 }
 
@@ -409,11 +414,22 @@ fn replay(case_id: &str) {
     let reply_path = fixtures_dir()
         .join("replies")
         .join(format!("{case_id}.json"));
+    #[cfg(unix)]
     let helper = write_helper(
         &dir,
         "reply.sh",
         &format!(
             "#!/bin/sh\ncp \"$2\" \"{}\"\ncat \"{}\"\n",
+            capture.display(),
+            reply_path.display()
+        ),
+    );
+    #[cfg(windows)]
+    let helper = write_helper(
+        &dir,
+        "reply.bat",
+        &format!(
+            "@echo off\r\ncopy /Y %2 \"{}\" >NUL\r\ntype \"{}\"\r\n",
             capture.display(),
             reply_path.display()
         ),

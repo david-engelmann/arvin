@@ -14,10 +14,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[cfg(unix)]
+use arvin::consultation_from_reply_body;
 use arvin::{
-    consultation_from_reply_body, format_instant, parse_instant, Consultation, Error,
-    FixtureTransport, Instant, ModelTransport, Record, SubprocessTransport, Switch, Value, Verdict,
-    DE_ESCALATION_BAR, ESCALATION_BAR, FORMAT_NAME, MODEL_NAME, STAGES, TRIGGERS,
+    format_instant, parse_instant, Consultation, Error, FixtureTransport, Instant, ModelTransport,
+    Record, SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR,
+    FORMAT_NAME, MODEL_NAME, STAGES, TRIGGERS,
 };
 
 fn t0() -> Instant {
@@ -2601,10 +2603,29 @@ fn cli_rejects_an_explicit_value_on_the_help_option() {
     );
 }
 
+// Portability adaptation because raw byte OsStrings are a Unix shape,
+// and APFS on macOS refuses invalid UTF-8 filenames while Windows uses
+// cli_handles_unpaired_surrogate_os_strings_on_windows below.
+#[cfg(unix)]
+fn host_accepts_non_utf8_filenames(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStringExt;
+    let probe = dir.join(std::ffi::OsString::from_vec(b"probe-\xff".to_vec()));
+    if std::fs::write(&probe, b"probe").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(unix)]
 #[test]
 fn cli_addresses_a_state_path_that_is_not_utf8() {
     use std::os::unix::ffi::OsStringExt;
     let dir = TestDir::new("non-utf8-state");
+    if !host_accepts_non_utf8_filenames(dir.path()) {
+        return;
+    }
     let raw_name = std::ffi::OsString::from_vec(b"state-\xff.json".to_vec());
     let state = dir.path().join(raw_name);
     let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
@@ -2622,6 +2643,8 @@ fn cli_addresses_a_state_path_that_is_not_utf8() {
     let document = std::fs::read_to_string(&state).unwrap();
     assert!(document.contains("\"format\": \"deadman-state/1\""));
 }
+
+#[cfg(unix)]
 #[test]
 fn cli_refuses_an_argument_that_is_not_utf8() {
     use std::os::unix::ffi::OsStringExt;
@@ -2671,6 +2694,7 @@ fn cli_refuses_an_argument_that_is_not_utf8() {
     assert_eq!(state_bytes(&dir), before);
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_refuses_a_judge_fixture_path_that_is_not_utf8() {
     use std::os::unix::ffi::OsStringExt;
@@ -2700,6 +2724,7 @@ fn cli_refuses_a_judge_fixture_path_that_is_not_utf8() {
     assert_eq!(state_bytes(&dir), before);
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_addresses_a_state_path_that_is_not_utf8_inline() {
     use std::os::unix::ffi::OsStringExt;
@@ -2709,6 +2734,9 @@ fn cli_addresses_a_state_path_that_is_not_utf8_inline() {
     // refusal that forgot the exemption fails this pin, as it
     // fails the separate form pin above.
     let dir = TestDir::new("non-utf8-state-inline");
+    if !host_accepts_non_utf8_filenames(dir.path()) {
+        return;
+    }
     let raw_name = std::ffi::OsString::from_vec(b"state-\xff.json".to_vec());
     let state = dir.path().join(&raw_name);
     let mut inline = std::ffi::OsString::from("--state=");
@@ -2724,6 +2752,47 @@ fn cli_addresses_a_state_path_that_is_not_utf8_inline() {
         "registered run-a\n"
     );
     assert!(state.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn cli_handles_unpaired_surrogate_os_strings_on_windows() {
+    use std::os::windows::ffi::OsStringExt;
+    let dir = TestDir::new("non-utf8-windows");
+    let state = state_path(&dir);
+    let bad_name = std::ffi::OsString::from_wide(&[b'r' as u16, 0xD800]);
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .arg("--state")
+        .arg(&state)
+        .arg("register")
+        .arg(&bad_name)
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("argument 4 is not valid UTF-8 text"),
+        "{stderr}"
+    );
+    let surrogate_leaf = std::ffi::OsString::from_wide(&[
+        b's' as u16,
+        0xD800,
+        b'.' as u16,
+        b'j' as u16,
+        b's' as u16,
+        b'o' as u16,
+        b'n' as u16,
+    ]);
+    let inline_state = dir.path().join(surrogate_leaf);
+    let mut inline = std::ffi::OsString::from("--state=");
+    inline.push(&inline_state);
+    let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
+        .arg(&inline)
+        .args(["register", "run-a"])
+        .output()
+        .expect("the binary runs");
+    assert_eq!(output.status.code(), Some(0));
+    assert!(inline_state.exists());
 }
 
 // ----------------------------------------------------------------
@@ -4251,11 +4320,16 @@ fn writer_renders_the_eleven_key_shape_byte_for_byte() {
 }
 
 fn write_helper(dir: &TestDir, name: &str, body: &str) -> PathBuf {
-    use std::os::unix::fs::PermissionsExt;
     let path = dir.path().join(name);
     std::fs::write(&path, body).expect("the helper is written");
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-        .expect("the helper is executable");
+    // Portability adaptation because POSIX execute bits apply only on Unix,
+    // while Windows dispatches batch helpers by file extension.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("the helper is executable");
+    }
     path
 }
 
@@ -4263,6 +4337,7 @@ fn subprocess(program: PathBuf, timeout: std::time::Duration) -> SubprocessTrans
     SubprocessTransport::new(program, Vec::new(), timeout)
 }
 
+#[cfg(unix)]
 #[test]
 fn subprocess_transport_reads_a_verdict_and_removes_its_payload() {
     let dir = TestDir::new("model-subprocess-verdict");
@@ -4289,6 +4364,7 @@ fn subprocess_transport_reads_a_verdict_and_removes_its_payload() {
     assert!(!Path::new(&payload_path).exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn subprocess_transport_classes() {
     let dir = TestDir::new("model-subprocess-classes");
@@ -4364,6 +4440,7 @@ fn subprocess_transport_classes() {
     assert_eq!(transport.consult("vignette"), Consultation::CallFailed);
 }
 
+#[cfg(unix)]
 #[test]
 fn subprocess_transport_enforces_its_deadline() {
     let dir = TestDir::new("model-subprocess-deadline");
@@ -4375,6 +4452,7 @@ fn subprocess_transport_enforces_its_deadline() {
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
 }
 
+#[cfg(unix)]
 #[test]
 fn subprocess_transport_bounds_the_reader_wait() {
     // The helper writes a verdict and exits at once, and a
@@ -4401,20 +4479,41 @@ fn subprocess_transport_bounds_the_reader_wait() {
 fn subprocess_transport_refuses_a_timeout_it_cannot_add() {
     // A timeout too wide to add to the current instant fails
     // the call before any helper stands spawned, so the
-    // helper never runs and writes no marker.
+    // helper never runs and writes no marker. Portability
+    // adaptation stages a batch helper on Windows so an
+    // accidental spawn writes the marker on Windows too.
     let dir = TestDir::new("model-subprocess-wide-timeout");
     let marker = dir.path().join("payload-path.txt");
-    let body = format!(
-        "#!/bin/sh\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
-        marker.display()
-    );
-    let helper = write_helper(&dir, "verdict.sh", &body);
+    #[cfg(unix)]
+    let helper = {
+        let body = format!(
+            "#!/bin/sh\nprintf '%s' \"$2\" > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+            marker.display()
+        );
+        write_helper(&dir, "verdict.sh", &body)
+    };
+    #[cfg(windows)]
+    let helper = {
+        let reply = dir.path().join("reply.json");
+        std::fs::write(
+            &reply,
+            "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}",
+        )
+        .unwrap();
+        let body = format!(
+            "@echo off\r\necho %2 > \"{}\"\r\ntype \"{}\"\r\n",
+            marker.display(),
+            reply.display()
+        );
+        write_helper(&dir, "verdict.bat", &body)
+    };
     let transport = subprocess(helper, std::time::Duration::MAX);
     let outcome = transport.consult("vignette");
     assert_eq!(outcome, Consultation::CallFailed);
     assert!(!marker.exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn subprocess_transport_bounds_the_reply() {
     let dir = TestDir::new("model-subprocess-bounds");
@@ -4425,6 +4524,50 @@ fn subprocess_transport_bounds_the_reply() {
     );
     let transport = subprocess(helper, std::time::Duration::from_secs(10));
     assert_eq!(transport.consult("vignette"), Consultation::MalformedReply);
+}
+
+#[cfg(windows)]
+#[test]
+fn subprocess_transport_and_cli_judge_work_with_cmd_batch_on_windows() {
+    let dir = TestDir::new("model-subprocess-windows");
+    let reply_path = dir.path().join("reply.json");
+    std::fs::write(
+        &reply_path,
+        format!(
+            "{{\"model\": \"{MODEL_NAME}\", \"choice\": {{\"label\": \"escalate\", \"confidence\": 0.9}}, \"score\": {{\"level\": 7}}}}"
+        ),
+    )
+    .unwrap();
+    let capture = dir.path().join("captured.json");
+    let helper = write_helper(
+        &dir,
+        "verdict.bat",
+        &format!(
+            "@echo off\r\ncopy /Y %2 \"{}\" >NUL\r\ntype \"{}\"\r\n",
+            capture.display(),
+            reply_path.display()
+        ),
+    );
+    let transport = subprocess(helper.clone(), std::time::Duration::from_secs(10));
+    assert_eq!(
+        transport.consult("The run stands at stage warn."),
+        Consultation::Verdict {
+            model_name: MODEL_NAME.to_string(),
+            verdict: Verdict::Escalate,
+            confidence: 0.9,
+            score: 6.0 / 9.0,
+        }
+    );
+    assert!(capture.exists());
+    let switch = cli_switch_at_warn(&dir);
+    let state = state_path(&dir).to_string_lossy().into_owned();
+    let helper_text = helper.to_string_lossy().into_owned();
+    let (stdout, _) = run_cli(
+        &["--state", &state, "stage", "run-a", "--judge", &helper_text],
+        0,
+    );
+    assert!(stdout.lines().any(|line| line == "stage throttle"));
+    assert_eq!(last_record(&switch).stage, "throttle");
 }
 
 #[test]
@@ -4494,6 +4637,7 @@ fn build_held_at_wall(switch: &Switch, anchor: &Instant) {
 /// evaluation 200 seconds before the anchor, so the standing
 /// clear streak stands at 1 and the warrant stands below the
 /// stage.
+#[cfg(unix)]
 fn build_fall_at_wall(switch: &Switch, anchor: &Instant) {
     switch
         .register(
@@ -4528,6 +4672,7 @@ fn cli_switch_at_warn(dir: &TestDir) -> Switch {
 /// The state text inside a call payload the helper was
 /// handed, decoded out of the payload document, standing for
 /// the vignette the library built for the consultation.
+#[cfg(unix)]
 fn payload_state_text(payload: &str) -> String {
     let marker = "\"state\": \"";
     let start = payload
@@ -4585,6 +4730,7 @@ fn payload_state_text(payload: &str) -> String {
 /// landings must stand byte identical, and the vignette the
 /// twin transport was shown must equal the state text inside
 /// the payload the helper captured.
+#[cfg(unix)]
 fn self_witness(
     name: &str,
     build: fn(&Switch, &Instant),
@@ -4645,6 +4791,7 @@ fn self_witness(
     (record, stdout, one_bytes, two_bytes)
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_model_self_witnessing_equivalence() {
     // A held seat escalate that applies.
@@ -4689,6 +4836,7 @@ fn cli_model_self_witnessing_equivalence() {
 /// with the named helper script standing as the judge program,
 /// and return the printed output and the record the evaluation
 /// appended.
+#[cfg(unix)]
 fn cli_model_drive(name: &str, script: &str) -> (String, Record) {
     let dir = TestDir::new(name);
     let switch = cli_switch_at_warn(&dir);
@@ -4735,18 +4883,21 @@ fn cli_model_missing_judge_program_records_call_failed() {
     assert_fallback(&stdout, &record, "call failed");
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_model_helper_nonzero_exit_records_call_failed() {
     let (stdout, record) = cli_model_drive("model-cli-exit-two", "#!/bin/sh\nexit 2\n");
     assert_fallback(&stdout, &record, "call failed");
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_model_helper_empty_body_records_silence() {
     let (stdout, record) = cli_model_drive("model-cli-silence", "#!/bin/sh\nprintf ''\n");
     assert_fallback(&stdout, &record, "silence");
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_model_helper_body_outside_the_grammar_records_malformed_reply() {
     let (stdout, record) =
@@ -4754,6 +4905,7 @@ fn cli_model_helper_body_outside_the_grammar_records_malformed_reply() {
     assert_fallback(&stdout, &record, "malformed reply");
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_model_helper_abstention_records_abstention() {
     let (stdout, record) = cli_model_drive(
@@ -4763,6 +4915,7 @@ fn cli_model_helper_abstention_records_abstention() {
     assert_fallback(&stdout, &record, "abstention");
 }
 
+#[cfg(unix)]
 #[test]
 fn cli_model_helper_past_its_timeout_records_call_failed() {
     let dir = TestDir::new("model-cli-timeout");
@@ -4997,11 +5150,31 @@ fn cli_model_stage_off_seat_never_invokes_its_helper() {
         )
         .expect("registration succeeds");
     let capture = dir.path().join("payload.json");
+    // Portability adaptation stages a batch helper on Windows so an
+    // off-seat spawn writes capture on Windows as well as Unix.
+    #[cfg(unix)]
     let helper = write_helper(
         &dir,
         "judge.sh",
         "#!/bin/sh\ncp \"$3\" \"$1\"\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}'\n",
     );
+    #[cfg(windows)]
+    let helper = {
+        let reply = dir.path().join("reply.json");
+        std::fs::write(
+            &reply,
+            "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}",
+        )
+        .unwrap();
+        write_helper(
+            &dir,
+            "judge.bat",
+            &format!(
+                "@echo off\r\ncopy /Y %3 %1 >NUL\r\ntype \"{}\"\r\n",
+                reply.display()
+            ),
+        )
+    };
     let state = state_path(&dir).to_string_lossy().into_owned();
     let helper_text = helper.to_string_lossy().into_owned();
     let capture_text = capture.to_string_lossy().into_owned();
@@ -5099,11 +5272,31 @@ fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_help
     let dir = TestDir::new("model-cli-timeout-widest");
     let switch = cli_switch_at_warn(&dir);
     let marker = dir.path().join("helper-ran.txt");
-    let body = format!(
-        "#!/bin/sh\nprintf '%s' 'ran' > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
-        marker.display()
-    );
-    let helper = write_helper(&dir, "judge.sh", &body);
+    // Portability adaptation stages a batch helper on Windows so an
+    // accidental spawn writes marker on Windows as well as Unix.
+    #[cfg(unix)]
+    let helper = {
+        let body = format!(
+            "#!/bin/sh\nprintf '%s' 'ran' > \"{}\"\nprintf '%s' '{{\"model\": \"jev-1.13.0\", \"choice\": {{\"label\": \"hold\", \"confidence\": 0.5}}, \"score\": {{\"level\": 5}}}}'\n",
+            marker.display()
+        );
+        write_helper(&dir, "judge.sh", &body)
+    };
+    #[cfg(windows)]
+    let helper = {
+        let reply = dir.path().join("reply.json");
+        std::fs::write(
+            &reply,
+            "{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"hold\", \"confidence\": 0.5}, \"score\": {\"level\": 5}}",
+        )
+        .unwrap();
+        let body = format!(
+            "@echo off\r\necho ran > \"{}\"\r\ntype \"{}\"\r\n",
+            marker.display(),
+            reply.display()
+        );
+        write_helper(&dir, "judge.bat", &body)
+    };
     let state = state_path(&dir).to_string_lossy().into_owned();
     let helper_text = helper.to_string_lossy().into_owned();
     let (stdout, _) = run_cli(
@@ -5124,6 +5317,7 @@ fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_help
     assert!(!marker.exists(), "the helper never ran");
 }
 
+#[cfg(unix)]
 #[test]
 fn a_helper_written_from_the_contract_statement_alone_interoperates() {
     // The stranger pin of DM-21. The helper below is written
@@ -5175,6 +5369,7 @@ fn a_helper_written_from_the_contract_statement_alone_interoperates() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn contract_states_the_reply_bound_the_transport_enforces() {
     // DM-21 states the reply bound as a number in the
@@ -5286,6 +5481,28 @@ fn a_bare_fraction_separator_without_a_zone_still_refuses() {
     }
 }
 
+// Portability adaptation uses a closed pipe fallback where /dev/full
+// is absent so failed output write pins run on macOS and Windows too.
+fn dead_stream() -> std::process::Stdio {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/full")
+    {
+        if file.write_all(b"probe").is_err() {
+            return std::process::Stdio::from(file);
+        }
+    }
+    let (reader, mut writer) = std::io::pipe().expect("the anonymous pipe opens");
+    drop(reader);
+    assert!(
+        writer.write_all(b"probe").is_err(),
+        "writes to a closed pipe must fail"
+    );
+    std::process::Stdio::from(writer)
+}
+
 /// Run the CLI with stdout redirected to the full device, so
 /// every write the command makes to stdout fails, returning
 /// the exit code and the stderr text. The device is opened
@@ -5294,13 +5511,10 @@ fn a_bare_fraction_separator_without_a_zone_still_refuses() {
 /// form would let every command pass and the drive would
 /// prove nothing.
 fn run_cli_stdout_full(args: &[&str]) -> (i32, String) {
-    let full = std::fs::OpenOptions::new()
-        .write(true)
-        .open("/dev/full")
-        .expect("the full device opens");
+    let dead = dead_stream();
     let output = Command::new(env!("CARGO_BIN_EXE_arvin"))
         .args(args)
-        .stdout(std::process::Stdio::from(full))
+        .stdout(dead)
         .stderr(std::process::Stdio::piped())
         .output()
         .expect("the binary runs");
