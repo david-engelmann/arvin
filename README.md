@@ -115,20 +115,20 @@ model_score 0.5555555555555556
 fallback_taken null
 ```
 
-The command line names a judge in one of two forms. The --judge form names a program the transport runs with the arguments the caller names followed by `--raw-payload` and the path of a temporary file holding the consultation document, and the program prints the reply body to its standard output, and the --judge-fixture form names a file holding a reply body that is read through the same grammar with no process spawned. A judge that cannot be started, or answers past its timeout, or answers outside the grammar lands in the fallback classes the library records, and the printed lines name the class. The two runs below stand at warn with the held seat open. Each was registered through the binding at named instants with an hour proof interval and raised by one missed proof, the construction the command line cannot stage itself because it reads the wall clock alone. The helper prints the recorded reply body of case DM-E01, and reply.json holds a copy of the same body, the original standing in the repo at tests/fixtures/escalation/replies/DM-E01.json.
+The command line names a judge in one of two forms, and an optional --judge-model flag selects any valid model identifier in place of the default jev-1.14.0. The --judge form names a program the transport runs with the arguments the caller names followed by `--raw-payload` and the path of a temporary file holding the consultation document, and the program prints the reply body to its standard output, and the --judge-fixture form names a file holding a reply body that is read through the same grammar with no process spawned. A judge that cannot be started, or answers past its timeout, or answers outside the grammar lands in the fallback classes the library records, and the printed lines name the class. The two runs below stand at warn with the held seat open. Each was registered through the binding at named instants with an hour proof interval and raised by one missed proof, the construction the command line cannot stage itself because it reads the wall clock alone. The helper prints an escalate reply for the default model jev-1.14.0, and reply.json holds a copy of the recorded reply body of case DM-E01 at tests/fixtures/escalation/replies/DM-E01.json, paired with --judge-model jev-1.13.0.
 
 ```
 $ cat judge.sh
 #!/bin/sh
-printf '%s' '{"model": "jev-1.13.0", "choice": {"label": "escalate", "confidence": 0.77}, "score": {"level": 6}}'
+printf '%s' '{"model": "jev-1.14.0", "choice": {"label": "escalate", "confidence": 0.77}, "score": {"level": 6}}'
 $ arvin --state model.json stage model-run --judge ./judge.sh
 stage throttle
 reason missed proofs
-model jev-1.13.0
+model jev-1.14.0
 verdict escalate
 confidence 0.77
 score 0.5555555555555556
-$ arvin --state model.json stage fixture-run --judge-fixture reply.json
+$ arvin --state model.json stage fixture-run --judge-fixture reply.json --judge-model jev-1.13.0
 stage throttle
 reason missed proofs
 model jev-1.13.0
@@ -182,7 +182,7 @@ log 4 stage cut budget
 log 5 pull kill
 ```
 
-The binding carries the same model entry point as stage_with_model. A caller names a judge program or a fixture dictionary standing in for the consultation, and the call returns the stage report of the evaluation it ran. The fixture dictionary below carries the same consultation the command line examples above drive, an escalate verdict from jev-1.13.0 at confidence 0.77, and the log read shows the fields the consultation record carries.
+The binding carries the same model entry point as stage_with_model. A caller names a judge program, a callable transport, or a fixture dictionary standing in for the consultation, and the call returns the stage report of the evaluation it ran. The fixture dictionary below carries the same consultation the command line helper above drives, an escalate verdict from jev-1.14.0 at confidence 0.77, and the log read shows the fields the consultation record carries.
 
 ```python
 import arvin
@@ -198,7 +198,7 @@ report = arvin.stage_with_model(
     "model-run",
     "2031-05-04T12:01:01+00:00",
     fixture={
-        "model_name": "jev-1.13.0",
+        "model_name": "jev-1.14.0",
         "verdict": "escalate",
         "confidence": 0.77,
         "score": 5 / 9,
