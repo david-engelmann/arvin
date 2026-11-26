@@ -259,7 +259,7 @@ pub use providers::{
     cloudflare_endpoint, cloudflare_route_model, detect_provider, format_provider_request,
     normalize_provider_reply, wire_model_name, DecisionProvider,
 };
-pub use switch::Switch;
+pub use switch::{RunSummary, Switch};
 pub use transport::{
     consultation_from_reply_body, judge_payload_value, validate_judge_form, SubprocessTransport,
 };

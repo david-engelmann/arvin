@@ -218,7 +218,7 @@ verdict escalate confidence 0.77
 
 ## Status
 
-The staged cutoff works end to end through the command line, the library, and the Python binding against one state file in the deadman-state/1 format. Registration, proofs, spend reports, stage evaluation, the operator pull, and the decision log all stand landed and tested. The evaluator walks a run down the ladder none, warn, throttle, cut tools, cut budget, kill on missed proofs and on spend ceilings, and a pull goes straight to kill and latches it. Arvin signals no process itself, and hosts enforce the stage against their own processes.
+The staged cutoff works end to end through the command line, the library, and the Python binding against one state file in the deadman-state/1 format. Registration, proofs, spend reports, stage evaluation, the operator pull, the decision log, and the run summary listing all stand landed and tested. The evaluator walks a run down the ladder none, warn, throttle, cut tools, cut budget, kill on missed proofs and on spend ceilings, and a pull goes straight to kill and latches it. Arvin signals no process itself, and hosts enforce the stage against their own processes.
 
 The model seat stands landed in the library on the terms above and stands carried to the command line and the Python binding on the same terms. In the Round 4 landing measurement the model reaches the fall seat and recommends de-escalation there, and no endorsement has landed because its confidence stays under the bar. No live model call runs in the gate, and the recorded fixture corpus is what the gate replays.
 
@@ -226,7 +226,7 @@ What is not built. Arvin has no daemon and no watcher, so a stage moves only whe
 
 Closed perfection rounds are 100 of 100. A round counts only when a full cycle of work and audit and review and red team and approval has closed, and seeding and setup are not rounds.
 
-The contract lives in CONTRACT.md, where obligations DM-1 to DM-24 state the stage semantics, the limits, and the behaviour of the model seat and its records and provider codecs, and ROADMAP.md records the decision model doctrine the seat implements.
+The contract lives in CONTRACT.md, where obligations DM-1 to DM-25 state the stage semantics, the limits, the behaviour of the model seat and its records and provider codecs, and the run summary listing and version flag, and ROADMAP.md records the decision model doctrine the seat implements.
 
 The remote seed was verified on 2026-11-02 against the staged seed and its commit is aa48f0fe5d57b8bc0e01db2c687ed128e1e0f2d4, a parentless commit holding exactly README.md and LICENSE and .gitignore.
 

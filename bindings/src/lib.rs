@@ -49,8 +49,8 @@ use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use arvin_core::{
     consultation_from_reply_body, judge_payload_value, validate_model_id, Consultation,
-    DecisionProvider, Error, FixtureTransport, Instant, ModelTransport, Record, StageReport,
-    SubprocessTransport, Switch, Value, Verdict, DEFAULT_JUDGE_TIMEOUT_SECONDS,
+    DecisionProvider, Error, FixtureTransport, Instant, ModelTransport, Record, RunSummary,
+    StageReport, SubprocessTransport, Switch, Value, Verdict, DEFAULT_JUDGE_TIMEOUT_SECONDS,
     DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS, JUDGE_MODELS, LEGACY_MODEL_NAME,
     MODEL_NAME,
 };
@@ -1029,6 +1029,36 @@ fn log(py: Python<'_>, state: PathBuf, run: &str) -> PyResult<Vec<Py<PyDict>>> {
         .collect()
 }
 
+fn run_summary_dict(py: Python<'_>, summary: &RunSummary) -> PyResult<Py<PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("id", &summary.id)?;
+    dict.set_item("registered_at", &summary.registered_at)?;
+    dict.set_item(
+        "proof_interval_seconds",
+        value_to_py(py, &summary.proof_interval_seconds)?,
+    )?;
+    dict.set_item("missed_proof_limit", summary.missed_proof_limit)?;
+    dict.set_item("soft_ceiling", summary.soft_ceiling)?;
+    dict.set_item("hard_ceiling", summary.hard_ceiling)?;
+    dict.set_item("spend_total", summary.spend_total)?;
+    dict.set_item("last_proof_at", summary.last_proof_at.as_deref())?;
+    dict.set_item("stage", &summary.stage)?;
+    dict.set_item("killed", summary.killed)?;
+    Ok(dict.unbind())
+}
+
+/// Return the standing summary of every run in registration order.
+#[pyfunction]
+fn runs(py: Python<'_>, state: PathBuf) -> PyResult<Vec<Py<PyDict>>> {
+    check_not_reentrant(&state)?;
+    let switch = Switch::new(state);
+    let summaries = py.detach(|| switch.runs()).map_err(to_py_error)?;
+    summaries
+        .iter()
+        .map(|summary| run_summary_dict(py, summary))
+        .collect()
+}
+
 fn extract_utf8_arg(value: &Bound<'_, PyString>, label: &str) -> PyResult<String> {
     value.extract::<String>().map_err(|_| {
         to_py_error(Error::InvalidRequest(format!(
@@ -1167,6 +1197,7 @@ fn _arvin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage, m)?)?;
     m.add_function(wrap_pyfunction!(stage_with_model, m)?)?;
     m.add_function(wrap_pyfunction!(log, m)?)?;
+    m.add_function(wrap_pyfunction!(runs, m)?)?;
     m.add_function(wrap_pyfunction!(detect_provider, m)?)?;
     m.add_function(wrap_pyfunction!(format_provider_request, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_provider_reply, m)?)?;

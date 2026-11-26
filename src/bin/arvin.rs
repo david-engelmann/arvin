@@ -29,29 +29,31 @@ use arvin::{
 };
 
 const MAIN_USAGE: &str =
-    "usage: arvin [-h] --state STATE {register,prove,spend,pull,stage,log} ...";
+    "usage: arvin [-h] [-V] --state STATE {register,prove,spend,pull,stage,log,runs} ...";
 
 const MAIN_HELP: &str = "\
-usage: arvin [-h] --state STATE {register,prove,spend,pull,stage,log} ...
+usage: arvin [-h] [-V] --state STATE {register,prove,spend,pull,stage,log,runs} ...
 
 Watch agent runs and walk them down a staged cutoff as the evidence of a
 runaway grows.
 
 positional arguments:
-  {register,prove,spend,pull,stage,log}
+  {register,prove,spend,pull,stage,log,runs}
     register            open a run record
     prove               record a progress proof for a run
     spend               record a spend report for a run
     pull                pull the switch and kill the run
     stage               evaluate a run and report its stage
     log                 show the recorded decision log of a run
+    runs                list the standing summary of every run
 
 options:
   -h, --help            show this help message and exit
+  -V, --version         show program's version number and exit
   --state STATE         the state file holding the runs, created by the first
                         mutation";
 
-const COMMANDS: [&str; 6] = ["register", "prove", "spend", "pull", "stage", "log"];
+const COMMANDS: [&str; 7] = ["register", "prove", "spend", "pull", "stage", "log", "runs"];
 
 fn sub_usage(command: &str) -> &'static str {
     match command {
@@ -64,6 +66,7 @@ fn sub_usage(command: &str) -> &'static str {
         "stage" => {
             "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--judge-model JUDGE_MODEL]\n                        [--host-context HOST_CONTEXT]\n                        run"
         }
+        "runs" => "usage: arvin runs [-h]",
         _ => "usage: arvin log [-h] run",
     }
 }
@@ -85,6 +88,7 @@ fn sub_help(command: &str) -> String {
         "stage" => {
             "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --judge-model JUDGE_MODEL\n                        the decision model identifier pinned for the consultation, default jev-1.14.0\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
         }
+        "runs" => "options:\n  -h, --help  show this help message and exit",
         _ => {
             "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
@@ -429,6 +433,9 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
         let token = &tokens[index];
         if !after_separator && token == "--" {
             after_separator = true;
+            if command == "runs" {
+                result.extras.push(token.clone());
+            }
             index += 1;
             continue;
         }
@@ -519,7 +526,7 @@ fn parse_sub(command: &str, tokens: &[String]) -> Result<SubArgs, ParserError> {
             index += 1;
             continue;
         }
-        if result.positionals.is_empty() {
+        if command != "runs" && result.positionals.is_empty() {
             result.positionals.push(token.clone());
         } else {
             result.extras.push(token.clone());
@@ -575,7 +582,7 @@ fn option_int<'a>(args: &'a SubArgs, name: &str) -> Option<&'a Value> {
 
 fn require(command: &str, args: &SubArgs) -> Result<(), ParserError> {
     let mut missing: Vec<String> = Vec::new();
-    if args.positionals.is_empty() {
+    if command != "runs" && args.positionals.is_empty() {
         missing.push("run".to_string());
     }
     for name in required_options(command) {
@@ -637,6 +644,8 @@ fn first_undecodable_argument(os_argv: &[std::ffi::OsString]) -> Option<usize> {
         if token == "-h"
             || token == "--help"
             || (token.starts_with("-h") && !token.starts_with("--"))
+            || token == "-V"
+            || token == "--version"
         {
             break;
         }
@@ -645,7 +654,7 @@ fn first_undecodable_argument(os_argv: &[std::ffi::OsString]) -> Option<usize> {
                 Some(pos) => (&token[..pos], true),
                 None => (&token[..], false),
             };
-            match resolve_long(name, &["--help", "--state"]) {
+            match resolve_long(name, &["--help", "--version", "--state"]) {
                 Ok(Some("--state")) => {
                     if inline_value {
                         exempt[index] = true;
@@ -754,12 +763,16 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
             print_line(MAIN_HELP);
             return Ok(ExitCode::from(0));
         }
+        if token == "-V" {
+            print_line(&format!("arvin {}", env!("CARGO_PKG_VERSION")));
+            return Ok(ExitCode::from(0));
+        }
         if token.starts_with("--") && token.len() > 2 {
             let (name, inline_value) = match token.find('=') {
                 Some(pos) => (&token[..pos], Some(token[pos + 1..].to_string())),
                 None => (&token[..], None),
             };
-            match resolve_long(name, &["--help", "--state"]) {
+            match resolve_long(name, &["--help", "--version", "--state"]) {
                 Ok(Some("--help")) => {
                     if let Some(value) = inline_value {
                         return Ok(parser_fail(
@@ -772,6 +785,20 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
                         ));
                     }
                     print_line(MAIN_HELP);
+                    return Ok(ExitCode::from(0));
+                }
+                Ok(Some("--version")) => {
+                    if let Some(value) = inline_value {
+                        return Ok(parser_fail(
+                            MAIN_USAGE,
+                            "arvin",
+                            &format!(
+                                "argument -V/--version: ignored explicit argument {}",
+                                py_repr_str(&value)
+                            ),
+                        ));
+                    }
+                    print_line(&format!("arvin {}", env!("CARGO_PKG_VERSION")));
                     return Ok(ExitCode::from(0));
                 }
                 Ok(Some("--state")) => {
@@ -834,7 +861,7 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
             MAIN_USAGE,
             "arvin",
             &format!(
-                "argument command: invalid choice: {} (choose from 'register', 'prove', 'spend', 'pull', 'stage', 'log')",
+                "argument command: invalid choice: {} (choose from 'register', 'prove', 'spend', 'pull', 'stage', 'log', 'runs')",
                 py_repr_str(&command)
             ),
         ));
@@ -864,11 +891,11 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
         ));
     }
     let switch = Switch::new(state_path.unwrap());
-    let now = now_utc()?;
     let run = args.positionals.first().cloned().unwrap_or_default();
     let run_value = Value::Str(run.clone());
     match command.as_str() {
         "register" => {
+            let now = now_utc()?;
             let proof_interval = option_int(&args, "--proof-interval")
                 .cloned()
                 .unwrap_or(Value::Int(DEFAULT_PROOF_INTERVAL_SECONDS as i128));
@@ -892,21 +919,54 @@ fn dispatch(argv: &[String], os_argv: &[std::ffi::OsString]) -> Result<ExitCode,
             print_line(&format!("registered {run}"));
         }
         "prove" => {
+            let now = now_utc()?;
             let note = option_text(&args, "--note").unwrap_or("").to_string();
             switch.prove(&run_value, &Value::Str(note), &now)?;
             print_line(&format!("proved {run}"));
         }
         "spend" => {
+            let now = now_utc()?;
             let amount = option_int(&args, "--amount").unwrap().clone();
             let total = switch.spend(&run_value, &amount, &now)?;
             print_line(&format!("spend_total {total}"));
         }
         "pull" => {
+            let now = now_utc()?;
             let stage = switch.pull(&run_value, &now)?;
             print_line(&format!("stage {stage}"));
         }
         "stage" => {
+            let now = now_utc()?;
             stage_command(&switch, &run_value, &now, &args)?;
+        }
+        "runs" => {
+            for summary in switch.runs()? {
+                let interval_text = match &summary.proof_interval_seconds {
+                    Value::Int(number) => number.to_string(),
+                    Value::BigInt(text) => text.clone(),
+                    _ => unreachable!(),
+                };
+                let soft_text = summary
+                    .soft_ceiling
+                    .map_or_else(|| "none".to_string(), |value| value.to_string());
+                let hard_text = summary
+                    .hard_ceiling
+                    .map_or_else(|| "none".to_string(), |value| value.to_string());
+                let last_proof_text = summary.last_proof_at.as_deref().unwrap_or("none");
+                print_line(&format!(
+                    "{} stage={} killed={} spend_total={} soft_ceiling={} hard_ceiling={} proof_interval_seconds={} missed_proof_limit={} registered_at={} last_proof_at={}",
+                    summary.id,
+                    summary.stage,
+                    summary.killed,
+                    summary.spend_total,
+                    soft_text,
+                    hard_text,
+                    interval_text,
+                    summary.missed_proof_limit,
+                    summary.registered_at,
+                    last_proof_text,
+                ));
+            }
         }
         _ => {
             for record in switch.log(&run_value)? {

@@ -6342,3 +6342,248 @@ fn dm24_example_decision_judge_dry_run_matches_provider_codecs() {
         assert!(!http_out.status.success(), "bad url {bad_url} must fail");
     }
 }
+
+#[test]
+fn dm25_runs_lists_summaries_without_creating_or_mutating_state() {
+    let dir = TestDir::new("dm25-runs-library");
+    let state = state_path(&dir);
+    let lock = dir.path().join("state.json.lock");
+    let switch = Switch::new(state.clone());
+
+    // Missing state returns empty Vec and creates neither state nor lock file.
+    assert_eq!(switch.runs().unwrap(), Vec::new());
+    assert!(!state.exists());
+    assert!(!lock.exists());
+
+    // A non-directory file standing as an ancestor of the path refuses as Corrupt rather than empty.
+    let blocker = dir.path().join("blocker-file");
+    std::fs::write(&blocker, "not a directory\n").unwrap();
+    let blocked_err = Switch::new(blocker.join("state.json")).runs().unwrap_err();
+    assert!(matches!(blocked_err, Error::Corrupt(_)), "{blocked_err:?}");
+
+    // Register two runs, prove and spend on run-a, pull run-b, and verify registration order and fields.
+    switch
+        .register(
+            &text("run-a"),
+            &t0(),
+            &int(60),
+            &int(5),
+            &int(100),
+            &int(500),
+        )
+        .unwrap();
+    switch
+        .register(
+            &text("run-b"),
+            &at(10),
+            &int(120),
+            &int(3),
+            &Value::Null,
+            &Value::Null,
+        )
+        .unwrap();
+    switch.prove(&text("run-a"), &text("ok"), &at(20)).unwrap();
+    switch.spend(&text("run-a"), &int(125), &at(25)).unwrap();
+    switch.stage(&text("run-a"), &at(30)).unwrap();
+    switch.pull(&text("run-b"), &at(35)).unwrap();
+
+    let before_bytes = std::fs::read(&state).unwrap();
+    let summaries = switch.runs().unwrap();
+    let after_bytes = std::fs::read(&state).unwrap();
+    assert_eq!(
+        before_bytes, after_bytes,
+        "runs must never mutate state bytes"
+    );
+    assert_eq!(
+        summaries,
+        vec![
+            arvin::RunSummary {
+                id: "run-a".to_string(),
+                registered_at: "2031-05-04T12:00:00+00:00".to_string(),
+                proof_interval_seconds: int(60),
+                missed_proof_limit: 5,
+                soft_ceiling: Some(100),
+                hard_ceiling: Some(500),
+                spend_total: 125,
+                last_proof_at: Some("2031-05-04T12:00:20+00:00".to_string()),
+                stage: "cut budget".to_string(),
+                killed: false,
+            },
+            arvin::RunSummary {
+                id: "run-b".to_string(),
+                registered_at: "2031-05-04T12:00:10+00:00".to_string(),
+                proof_interval_seconds: int(120),
+                missed_proof_limit: 3,
+                soft_ceiling: None,
+                hard_ceiling: None,
+                spend_total: 0,
+                last_proof_at: None,
+                stage: "kill".to_string(),
+                killed: true,
+            },
+        ]
+    );
+
+    // A stored proof_interval_seconds wider than 128 bits reads cleanly as Value::BigInt without panicking.
+    let wide_digits = format!("1{}", "0".repeat(60));
+    let wide_dir = TestDir::new("dm25-runs-wide-interval");
+    let wide_state = state_path(&wide_dir);
+    let wide_doc = format!(
+        "{{\n  \"format\": \"deadman-state/1\",\n  \"runs\": [\n    {{\n      \"id\": \"wide-run\",\n      \"registered_at\": \"2031-05-04T12:00:00+00:00\",\n      \"proof_interval_seconds\": {wide_digits},\n      \"missed_proof_limit\": 5,\n      \"soft_ceiling\": null,\n      \"hard_ceiling\": null,\n      \"spend_total\": 0,\n      \"last_proof_at\": null,\n      \"stage\": \"none\",\n      \"clear_streak\": 0,\n      \"killed\": false,\n      \"log\": [\n        {{\n          \"seq\": 1,\n          \"kind\": \"registered\",\n          \"at\": \"2031-05-04T12:00:00+00:00\",\n          \"stage\": \"none\",\n          \"reasons\": [],\n          \"model_name\": null,\n          \"model_confidence\": null,\n          \"fallback_taken\": null\n        }}\n      ]\n    }}\n  ]\n}}\n"
+    );
+    std::fs::write(&wide_state, &wide_doc).unwrap();
+    let wide_summaries = Switch::new(wide_state).runs().unwrap();
+    assert_eq!(wide_summaries.len(), 1);
+    assert_eq!(
+        wide_summaries[0].proof_interval_seconds,
+        Value::BigInt(wide_digits)
+    );
+
+    // Corrupt state file refuses as Corrupt without modifying bytes, both on bad syntax and on a join violation.
+    let corrupt_dir = TestDir::new("dm25-runs-corrupt");
+    let corrupt_path = state_path(&corrupt_dir);
+    std::fs::write(&corrupt_path, "not valid json\n").unwrap();
+    let err = Switch::new(corrupt_path.clone()).runs().unwrap_err();
+    assert!(matches!(err, Error::Corrupt(_)), "{err:?}");
+    assert_eq!(
+        std::fs::read_to_string(&corrupt_path).unwrap(),
+        "not valid json\n"
+    );
+
+    let join_bad_path = corrupt_dir.path().join("join-bad.json");
+    let join_bad_doc = "{\n  \"format\": \"deadman-state/1\",\n  \"runs\": [\n    {\n      \"id\": \"bad-join\",\n      \"registered_at\": \"2031-05-04T12:00:00+00:00\",\n      \"proof_interval_seconds\": 60,\n      \"missed_proof_limit\": 5,\n      \"soft_ceiling\": null,\n      \"hard_ceiling\": null,\n      \"spend_total\": 50,\n      \"last_proof_at\": null,\n      \"stage\": \"none\",\n      \"clear_streak\": 0,\n      \"killed\": false,\n      \"log\": [\n        {\n          \"seq\": 1,\n          \"kind\": \"registered\",\n          \"at\": \"2031-05-04T12:00:00+00:00\",\n          \"stage\": \"none\",\n          \"reasons\": [],\n          \"model_name\": null,\n          \"model_confidence\": null,\n          \"fallback_taken\": null\n        }\n      ]\n    }\n  ]\n}\n";
+    std::fs::write(&join_bad_path, join_bad_doc).unwrap();
+    let join_err = Switch::new(join_bad_path.clone()).runs().unwrap_err();
+    assert!(matches!(join_err, Error::Corrupt(_)), "{join_err:?}");
+    assert_eq!(
+        std::fs::read_to_string(&join_bad_path).unwrap(),
+        join_bad_doc
+    );
+}
+
+#[test]
+fn dm25_cli_runs_and_version_flags() {
+    let expected_version = format!("arvin {}\n", env!("CARGO_PKG_VERSION"));
+    for flag in ["-V", "--version", "--ver", "--v"] {
+        let (stdout, stderr) = run_cli(&[flag], 0);
+        assert_eq!(stdout, expected_version, "flag {flag}");
+        assert_eq!(stderr, "");
+    }
+    let (_, ver_err) = run_cli(&["--version=1"], 2);
+    assert!(
+        ver_err.contains("argument -V/--version: ignored explicit argument '1'"),
+        "{ver_err}"
+    );
+    for flag in ["-V", "--version"] {
+        let (ver_dead_code, ver_dead_err) = run_cli_stdout_full(&[flag]);
+        assert_eq!(ver_dead_code, 1, "flag {flag}");
+        assert_eq!(
+            ver_dead_err,
+            "error: the command's output could not be written\n"
+        );
+    }
+
+    // Missing state prints empty output and creates no files.
+    let dir = TestDir::new("dm25-cli-runs");
+    let state = state_path(&dir);
+    let state_arg = state.to_string_lossy().into_owned();
+    let (empty_out, _) = run_cli(&["--state", &state_arg, "runs"], 0);
+    assert_eq!(empty_out, "");
+    assert!(!state.exists());
+    assert!(!dir.path().join("state.json.lock").exists());
+
+    // Help and extra-argument refusal on runs subcommand, including double-dash separator.
+    let (runs_help, _) = run_cli(&["--state", &state_arg, "runs", "--help"], 0);
+    assert!(
+        runs_help.starts_with("usage: arvin runs [-h]\n"),
+        "{runs_help}"
+    );
+    for (bad_tail, expected_msg) in [
+        (&["unexpected"][..], "unrecognized arguments: unexpected"),
+        (&["--"][..], "unrecognized arguments: --"),
+        (&["--", "extra"][..], "unrecognized arguments: -- extra"),
+        (&["--", "-h"][..], "unrecognized arguments: -- -h"),
+    ] {
+        let mut argv = vec!["--state", &state_arg, "runs"];
+        argv.extend_from_slice(bad_tail);
+        let (_, extra_err) = run_cli(&argv, 2);
+        assert!(extra_err.contains(expected_msg), "{extra_err}");
+    }
+
+    // Populated runs print in registration order with set ceilings and proof timestamps, and dead stdout exits 1.
+    run_cli(
+        &[
+            "--state",
+            &state_arg,
+            "register",
+            "--soft-ceiling",
+            "50",
+            "--hard-ceiling",
+            "200",
+            "alpha",
+        ],
+        0,
+    );
+    run_cli(
+        &["--state", &state_arg, "prove", "--note", "ok", "alpha"],
+        0,
+    );
+    run_cli(&["--state", &state_arg, "register", "beta"], 0);
+    run_cli(&["--state", &state_arg, "pull", "beta"], 0);
+    let before = std::fs::read(&state).unwrap();
+    let (list_out, _) = run_cli(&["--state", &state_arg, "runs"], 0);
+    assert_eq!(std::fs::read(&state).unwrap(), before);
+    let lines: Vec<&str> = list_out.lines().collect();
+    assert_eq!(lines.len(), 2, "{list_out}");
+    assert!(
+        lines[0].starts_with(
+            "alpha stage=none killed=false spend_total=0 soft_ceiling=50 hard_ceiling=200 proof_interval_seconds=60 missed_proof_limit=5 registered_at="
+        ),
+        "{}",
+        lines[0]
+    );
+    assert!(!lines[0].ends_with(" last_proof_at=none"), "{}", lines[0]);
+    assert!(lines[0].contains(" last_proof_at=20"), "{}", lines[0]);
+    assert!(
+        lines[1].starts_with(
+            "beta stage=kill killed=true spend_total=0 soft_ceiling=none hard_ceiling=none proof_interval_seconds=60 missed_proof_limit=5 registered_at="
+        ),
+        "{}",
+        lines[1]
+    );
+    assert!(lines[1].ends_with(" last_proof_at=none"), "{}", lines[1]);
+
+    // Wide stored proof_interval_seconds prints losslessly and corrupt state exits 3 on CLI runs.
+    let wide_digits = format!("1{}", "0".repeat(60));
+    let wide_cli_path = dir.path().join("wide-cli.json");
+    let wide_cli_arg = wide_cli_path.to_string_lossy().into_owned();
+    let wide_cli_doc = format!(
+        "{{\n  \"format\": \"deadman-state/1\",\n  \"runs\": [\n    {{\n      \"id\": \"wide-run\",\n      \"registered_at\": \"2031-05-04T12:00:00+00:00\",\n      \"proof_interval_seconds\": {wide_digits},\n      \"missed_proof_limit\": 5,\n      \"soft_ceiling\": null,\n      \"hard_ceiling\": null,\n      \"spend_total\": 0,\n      \"last_proof_at\": null,\n      \"stage\": \"none\",\n      \"clear_streak\": 0,\n      \"killed\": false,\n      \"log\": [\n        {{\n          \"seq\": 1,\n          \"kind\": \"registered\",\n          \"at\": \"2031-05-04T12:00:00+00:00\",\n          \"stage\": \"none\",\n          \"reasons\": [],\n          \"model_name\": null,\n          \"model_confidence\": null,\n          \"fallback_taken\": null\n        }}\n      ]\n    }}\n  ]\n}}\n"
+    );
+    std::fs::write(&wide_cli_path, &wide_cli_doc).unwrap();
+    let (wide_cli_out, _) = run_cli(&["--state", &wide_cli_arg, "runs"], 0);
+    assert!(
+        wide_cli_out.contains(&format!("proof_interval_seconds={wide_digits}")),
+        "{wide_cli_out}"
+    );
+
+    let corrupt_cli_path = dir.path().join("corrupt-cli.json");
+    let corrupt_cli_arg = corrupt_cli_path.to_string_lossy().into_owned();
+    std::fs::write(&corrupt_cli_path, "corrupt\n").unwrap();
+    let (_, corrupt_cli_err) = run_cli(&["--state", &corrupt_cli_arg, "runs"], 1);
+    assert!(
+        corrupt_cli_err.contains("error: the state is corrupt"),
+        "{corrupt_cli_err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&corrupt_cli_path).unwrap(),
+        "corrupt\n"
+    );
+
+    let (runs_dead_code, runs_dead_err) = run_cli_stdout_full(&["--state", &state_arg, "runs"]);
+    assert_eq!(runs_dead_code, 1);
+    assert_eq!(
+        runs_dead_err,
+        "error: the command's output could not be written\n"
+    );
+}
