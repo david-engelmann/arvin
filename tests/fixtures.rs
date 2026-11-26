@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use arvin::{Error, Instant, Switch, Value, MODEL_NAME};
+use arvin::{Error, Instant, Switch, Value, LEGACY_MODEL_NAME, MODEL_NAME};
 use sha2::{Digest, Sha256};
 
 // The small JSON reader stands in one home,
@@ -549,6 +549,7 @@ fn contract_payload_statement_matches_the_recorded_requests() {
         .collect();
     paths.sort();
     assert_eq!(paths.len(), 48, "the corpus carries 48 recorded requests");
+    assert_eq!(MODEL_NAME, "jev-1.14.0");
     for path in &paths {
         let text = std::fs::read_to_string(path).expect("a recorded request reads");
         let document = Parser::parse(&text).expect("a recorded request parses");
@@ -558,10 +559,13 @@ fn contract_payload_statement_matches_the_recorded_requests() {
             ["model", "state", "questions"],
             "{name} carries exactly the stated fields in order"
         );
+        // Mechanical consequence of DM-24 advancing MODEL_NAME to
+        // jev-1.14.0 while keeping the frozen Round 4 corpus byte
+        // identical at LEGACY_MODEL_NAME.
         assert_eq!(
             document.get("model").and_then(Json::as_str),
-            Some(MODEL_NAME),
-            "{name} names the pinned model the statement names"
+            Some(LEGACY_MODEL_NAME),
+            "{name} names the pinned legacy model of the frozen Round 4 corpus"
         );
         assert!(
             matches!(document.get("state"), Some(Json::Str(text)) if !text.is_empty()),

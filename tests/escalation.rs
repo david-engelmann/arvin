@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arvin::{
     consultation_from_reply_body, Consultation, FixtureTransport, Instant, Record,
-    SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR, MODEL_NAME,
-    STAGES,
+    SubprocessTransport, Switch, Value, Verdict, DE_ESCALATION_BAR, ESCALATION_BAR,
+    LEGACY_MODEL_NAME, MODEL_NAME, STAGES,
 };
 
 // The small JSON reader and the stage ladder helpers stand in
@@ -436,8 +436,17 @@ fn replay(case_id: &str) {
             reply_path.display()
         ),
     );
-    let transport =
-        SubprocessTransport::new(helper, Vec::new(), std::time::Duration::from_secs(10));
+    // Mechanical consequence of DM-24 advancing MODEL_NAME to
+    // jev-1.14.0 while replaying the frozen Round 4 corpus under
+    // LEGACY_MODEL_NAME so every recorded request and reply file
+    // stands byte for byte unchanged.
+    let transport = SubprocessTransport::with_model(
+        helper,
+        Vec::new(),
+        std::time::Duration::from_secs(10),
+        LEGACY_MODEL_NAME,
+    )
+    .expect("the legacy model name stands valid");
     let report = switch
         .stage_with_model(
             &text(&case.run_id),
@@ -618,8 +627,11 @@ fn the_public_reply_grammar_reads_every_recorded_reply() {
         let body =
             std::fs::read_to_string(fixtures_dir().join("replies").join(format!("{id}.json")))
                 .expect("the recorded reply body reads");
+        // Mechanical consequence of DM-24 advancing MODEL_NAME to
+        // jev-1.14.0 while keeping the frozen Round 4 reply corpus
+        // byte identical under LEGACY_MODEL_NAME.
         assert_eq!(
-            consultation_from_reply_body(body.trim(), MODEL_NAME),
+            consultation_from_reply_body(body.trim(), LEGACY_MODEL_NAME),
             recorded_consultation(&case),
             "{id}: the public grammar reads the recorded consultation"
         );

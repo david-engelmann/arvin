@@ -36,6 +36,7 @@
 mod evaluate;
 mod instant;
 mod join;
+mod providers;
 mod reader;
 mod switch;
 mod transport;
@@ -154,10 +155,53 @@ pub(crate) const RUN_KEYS_WITH_CARRY: [&str; 13] = [
     "log",
 ];
 
-/// The model the escalation slice stands pinned to, named by
-/// the roadmap and reached only through a caller supplied
-/// transport under DM-20.
-pub const MODEL_NAME: &str = "jev-1.13.0";
+/// The default System One decision model under DM-24, reached
+/// only through a caller supplied transport under DM-20.
+pub const MODEL_NAME: &str = "jev-1.14.0";
+
+/// The legacy System One model identifier recorded in the frozen
+/// Round 4 fixture corpus.
+pub const LEGACY_MODEL_NAME: &str = "jev-1.13.0";
+
+/// First-class System One decision model identifiers carried
+/// across the five provider families under DM-24.
+pub const JUDGE_MODELS: [&str; 14] = [
+    "jev-1.14.0",
+    "jev-1.13.0",
+    "gemini-decision-1",
+    "gpt-6-luna",
+    "gpt-oss-safeguard-120b",
+    "gpt-oss-safeguard-20b",
+    "pplx-decider-v1.3",
+    "pplx-decider-latest",
+    "pplx-decider-flash-v1.3",
+    "pplx-decider-flash-latest",
+    "@cf/cloudflare/clef",
+    "@cf/cloudflare/clef-flash",
+    "clef",
+    "clef-flash",
+];
+
+/// Whether a caller-supplied model identifier stands in the 1
+/// through 128 printable ASCII non-whitespace shape of DM-24.
+pub fn is_valid_model_id(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MODEL_NAME_MAX
+        && name.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
+/// Validate a caller-supplied model identifier under DM-24,
+/// refusing out-of-shape identifiers as InvalidRequest.
+pub fn validate_model_id(name: &str) -> Result<()> {
+    if is_valid_model_id(name) {
+        Ok(())
+    } else {
+        Err(Error::InvalidRequest(
+            "the judge model identifier must be 1 to 128 printable ASCII non-whitespace characters"
+                .to_string(),
+        ))
+    }
+}
 
 /// The confidence bars of the combination rule in DM-15. The
 /// bars are constants of the library, named in the contract,
@@ -211,8 +255,14 @@ pub(crate) const MAX_NESTING: usize = 256;
 pub use evaluate::{Consultation, FixtureTransport, ModelTransport, StageReport, Verdict};
 pub use instant::{format_instant, parse_instant, Instant};
 pub use join::Record;
+pub use providers::{
+    cloudflare_endpoint, cloudflare_route_model, detect_provider, format_provider_request,
+    normalize_provider_reply, wire_model_name, DecisionProvider,
+};
 pub use switch::Switch;
-pub use transport::{consultation_from_reply_body, validate_judge_form, SubprocessTransport};
+pub use transport::{
+    consultation_from_reply_body, judge_payload_value, validate_judge_form, SubprocessTransport,
+};
 pub use validate::{
     validate_ceiling, validate_missed_proof_limit, validate_name, validate_note,
     validate_proof_interval, validate_spend_amount,

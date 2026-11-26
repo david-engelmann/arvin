@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use arvin::{
     consultation_from_reply_body, py_float_repr, py_repr_str, timeout_printable,
-    validate_judge_form, Error, FixtureTransport, Instant, ModelTransport, Record,
-    SubprocessTransport, Switch, Value, DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT,
-    DEFAULT_PROOF_INTERVAL_SECONDS, MODEL_NAME,
+    validate_judge_form, validate_model_id, Error, FixtureTransport, Instant, ModelTransport,
+    Record, SubprocessTransport, Switch, Value, DEFAULT_JUDGE_TIMEOUT_SECONDS,
+    DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS, MODEL_NAME,
 };
 
 const MAIN_USAGE: &str =
@@ -62,7 +62,7 @@ fn sub_usage(command: &str) -> &'static str {
         "spend" => "usage: arvin spend [-h] --amount AMOUNT run",
         "pull" => "usage: arvin pull [-h] run",
         "stage" => {
-            "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--host-context HOST_CONTEXT]\n                        run"
+            "usage: arvin stage [-h] [--judge JUDGE]\n                        [--judge-arg JUDGE_ARG]\n                        [--judge-timeout JUDGE_TIMEOUT]\n                        [--judge-fixture JUDGE_FIXTURE]\n                        [--judge-model JUDGE_MODEL]\n                        [--host-context HOST_CONTEXT]\n                        run"
         }
         _ => "usage: arvin log [-h] run",
     }
@@ -83,7 +83,7 @@ fn sub_help(command: &str) -> String {
             "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
         }
         "stage" => {
-            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
+            "positional arguments:\n  run\n\noptions:\n  -h, --help            show this help message and exit\n  --judge JUDGE         the helper program that judges the picture\n  --judge-arg JUDGE_ARG\n                        one argument handed to the helper before the payload flag, repeatable\n  --judge-timeout JUDGE_TIMEOUT\n                        the seconds the helper may take before the call fails, default 10\n  --judge-fixture JUDGE_FIXTURE\n                        a file holding one recorded reply body, judged instead of calling a helper\n  --judge-model JUDGE_MODEL\n                        the decision model identifier pinned for the consultation, default jev-1.14.0\n  --host-context HOST_CONTEXT\n                        host supplied context rendered into the picture"
         }
         _ => {
             "positional arguments:\n  run\n\noptions:\n  -h, --help  show this help message and exit"
@@ -107,6 +107,7 @@ fn value_options(command: &str) -> &'static [&'static str] {
             "--judge-arg",
             "--judge-timeout",
             "--judge-fixture",
+            "--judge-model",
             "--host-context",
         ],
         _ => &[],
@@ -942,6 +943,7 @@ fn stage_command(
     let fixture_file = option_text(args, "--judge-fixture");
     let judge_args = option_list(args, "--judge-arg");
     let judge_timeout = option_int(args, "--judge-timeout");
+    let judge_model = option_text(args, "--judge-model");
     let host_context = option_text(args, "--host-context");
     validate_judge_form(
         judge.is_some(),
@@ -949,6 +951,15 @@ fn stage_command(
         !judge_args.is_empty(),
         judge_timeout.is_some(),
     )?;
+    if judge_model.is_some() && judge.is_none() && fixture_file.is_none() {
+        return Err(Error::InvalidRequest(
+            "a judge model stands named with no judge form to carry it".to_string(),
+        ));
+    }
+    if let Some(model_name) = judge_model {
+        validate_model_id(model_name)?;
+    }
+    let pinned_model = judge_model.unwrap_or(MODEL_NAME);
     let timeout = match judge_timeout {
         Some(value) => Some(judge_timeout_duration(value)?),
         None => None,
@@ -956,17 +967,18 @@ fn stage_command(
     let subprocess_transport;
     let fixture_transport;
     let transport: Option<&dyn ModelTransport> = if let Some(program) = judge {
-        subprocess_transport = SubprocessTransport::new(
+        subprocess_transport = SubprocessTransport::with_model(
             PathBuf::from(program),
             judge_args.iter().map(|arg| arg.to_string()).collect(),
             timeout.unwrap_or(Duration::from_secs(DEFAULT_JUDGE_TIMEOUT_SECONDS)),
-        );
+            pinned_model,
+        )?;
         Some(&subprocess_transport)
     } else if let Some(path) = fixture_file {
         let body = read_judge_fixture(path)?;
         fixture_transport = FixtureTransport::new(
-            MODEL_NAME,
-            vec![consultation_from_reply_body(&body, MODEL_NAME)],
+            pinned_model,
+            vec![consultation_from_reply_body(&body, pinned_model)],
         );
         Some(&fixture_transport)
     } else {

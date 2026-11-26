@@ -45,12 +45,14 @@ use std::time::Duration;
 use pyo3::create_exception;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyTuple};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 use arvin_core::{
-    Consultation, Error, FixtureTransport, Instant, Record, StageReport, SubprocessTransport,
-    Switch, Value, Verdict, DEFAULT_JUDGE_TIMEOUT_SECONDS, DEFAULT_MISSED_PROOF_LIMIT,
-    DEFAULT_PROOF_INTERVAL_SECONDS,
+    consultation_from_reply_body, judge_payload_value, validate_model_id, Consultation,
+    DecisionProvider, Error, FixtureTransport, Instant, ModelTransport, Record, StageReport,
+    SubprocessTransport, Switch, Value, Verdict, DEFAULT_JUDGE_TIMEOUT_SECONDS,
+    DEFAULT_MISSED_PROOF_LIMIT, DEFAULT_PROOF_INTERVAL_SECONDS, JUDGE_MODELS, LEGACY_MODEL_NAME,
+    MODEL_NAME,
 };
 
 create_exception!(arvin, ArvinError, pyo3::exceptions::PyException);
@@ -391,6 +393,7 @@ fn register(
         None => Value::Null,
     };
     let now = instant_argument(now)?;
+    check_not_reentrant(&state)?;
     let switch = Switch::new(state);
     let run_value = Value::Str(run.to_string());
     py.detach(|| {
@@ -426,6 +429,7 @@ fn register(
 #[pyo3(signature = (state, run, now, note = None))]
 fn prove(py: Python<'_>, state: PathBuf, run: &str, now: &str, note: Option<&str>) -> PyResult<()> {
     let now = instant_argument(now)?;
+    check_not_reentrant(&state)?;
     let note = note.unwrap_or_default();
     let switch = Switch::new(state);
     let run_value = Value::Str(run.to_string());
@@ -450,6 +454,7 @@ fn spend(
 ) -> PyResult<i64> {
     let amount = integer_argument(amount, "amount")?;
     let now = instant_argument(now)?;
+    check_not_reentrant(&state)?;
     let switch = Switch::new(state);
     let run_value = Value::Str(run.to_string());
     py.detach(|| switch.spend(&run_value, &amount, &now))
@@ -463,6 +468,7 @@ fn spend(
 #[pyfunction]
 fn pull(py: Python<'_>, state: PathBuf, run: &str, now: &str) -> PyResult<String> {
     let now = instant_argument(now)?;
+    check_not_reentrant(&state)?;
     let switch = Switch::new(state);
     let run_value = Value::Str(run.to_string());
     py.detach(|| switch.pull(&run_value, &now))
@@ -477,6 +483,7 @@ fn pull(py: Python<'_>, state: PathBuf, run: &str, now: &str) -> PyResult<String
 #[pyfunction]
 fn stage(py: Python<'_>, state: PathBuf, run: &str, now: &str) -> PyResult<Py<PyDict>> {
     let now = instant_argument(now)?;
+    check_not_reentrant(&state)?;
     let switch = Switch::new(state);
     let run_value = Value::Str(run.to_string());
     let report = py
@@ -710,28 +717,184 @@ fn timeout_argument(value: &Bound<'_, PyAny>) -> PyResult<Duration> {
     Err(PyTypeError::new_err("judge_timeout must be a number"))
 }
 
+fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
+    Ok(match value {
+        Value::Null => py.None(),
+        Value::Bool(flag) => PyBool::new(py, *flag).to_owned().into_any().unbind(),
+        Value::Int(number) => number.into_pyobject(py)?.into_any().unbind(),
+        Value::BigInt(text) => py.get_type::<PyInt>().call1((text,))?.unbind(),
+        Value::Float(number) => PyFloat::new(py, *number).into_any().unbind(),
+        Value::Str(text) => PyString::new(py, text).into_any().unbind(),
+        Value::Array(items) => {
+            let mut converted = Vec::with_capacity(items.len());
+            for item in items {
+                converted.push(value_to_py(py, item)?);
+            }
+            PyList::new(py, converted)?.into_any().unbind()
+        }
+        Value::Object(pairs) => {
+            let dict = PyDict::new(py);
+            for (key, item) in pairs {
+                dict.set_item(key, value_to_py(py, item)?)?;
+            }
+            dict.into_any().unbind()
+        }
+    })
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct ActiveLockId {
+    lock_path: PathBuf,
+    #[cfg(unix)]
+    dev_ino: Option<(u64, u64)>,
+}
+
+std::thread_local! {
+    static ACTIVE_CONSULTATION_STATES: std::cell::RefCell<Vec<ActiveLockId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn lock_path_for(state: &std::path::Path) -> PathBuf {
+    let mut os = state.as_os_str().to_os_string();
+    os.push(".lock");
+    PathBuf::from(os)
+}
+
+fn normalized_lock_path(state: &std::path::Path) -> PathBuf {
+    let lock = lock_path_for(state);
+    if let Ok(canon) = std::fs::canonicalize(&lock) {
+        return canon;
+    }
+    if let (Some(parent), Some(name)) = (lock.parent(), lock.file_name()) {
+        let base = if parent.as_os_str().is_empty() {
+            std::path::Path::new(".")
+        } else {
+            parent
+        };
+        if let Ok(canon_parent) = std::fs::canonicalize(base) {
+            return canon_parent.join(name);
+        }
+    }
+    if lock.is_absolute() {
+        lock
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(lock)
+    } else {
+        lock
+    }
+}
+
+#[cfg(unix)]
+fn lock_dev_ino(state: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::metadata(lock_path_for(state)).ok()?;
+    Some((meta.dev(), meta.ino()))
+}
+
+fn snapshot_lock_id(state: &std::path::Path) -> ActiveLockId {
+    ActiveLockId {
+        lock_path: normalized_lock_path(state),
+        #[cfg(unix)]
+        dev_ino: lock_dev_ino(state),
+    }
+}
+
+fn check_not_reentrant(state: &std::path::Path) -> PyResult<()> {
+    let probe = snapshot_lock_id(state);
+    let active = ACTIVE_CONSULTATION_STATES.with(|slot| {
+        slot.borrow().iter().any(|held| {
+            if held.lock_path == probe.lock_path {
+                return true;
+            }
+            #[cfg(unix)]
+            if let (Some(a), Some(b)) = (held.dev_ino, probe.dev_ino) {
+                if a == b {
+                    return true;
+                }
+            }
+            false
+        })
+    });
+    if active {
+        return Err(to_py_error(Error::Failure(
+            "a transport callback cannot re-enter the state file under consultation".to_string(),
+        )));
+    }
+    Ok(())
+}
+
+struct ConsultationStateGuard {
+    token: usize,
+}
+
+static GUARD_SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+impl ConsultationStateGuard {
+    fn enter(state: &std::path::Path) -> Self {
+        let id = snapshot_lock_id(state);
+        ACTIVE_CONSULTATION_STATES.with(|slot| slot.borrow_mut().push(id));
+        Self {
+            token: GUARD_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+impl Drop for ConsultationStateGuard {
+    fn drop(&mut self) {
+        let _ = self.token;
+        ACTIVE_CONSULTATION_STATES.with(|slot| {
+            slot.borrow_mut().pop();
+        });
+    }
+}
+
+struct PyModelTransport {
+    callable: Py<PyAny>,
+    model_name: String,
+    state_path: PathBuf,
+}
+
+impl ModelTransport for PyModelTransport {
+    fn consult(&self, vignette: &str) -> Consultation {
+        let _inner_lock_guard = ConsultationStateGuard::enter(&self.state_path);
+        Python::attach(|py| {
+            let payload_val = judge_payload_value(&self.model_name, vignette);
+            let Ok(py_payload) = value_to_py(py, &payload_val) else {
+                return Consultation::CallFailed;
+            };
+            let Ok(result) = self.callable.bind(py).call1((py_payload,)) else {
+                return Consultation::CallFailed;
+            };
+            if !result.is_instance_of::<PyString>() {
+                return Consultation::CallFailed;
+            }
+            let Ok(body) = result.extract::<String>() else {
+                return Consultation::MalformedReply;
+            };
+            if body.len() > 65_536 {
+                return Consultation::MalformedReply;
+            }
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                return Consultation::Silence;
+            }
+            consultation_from_reply_body(trimmed, &self.model_name)
+        })
+    }
+
+    fn pinned_model_name(&self) -> &str {
+        &self.model_name
+    }
+}
+
 /// Evaluate a run at the instant with a model consulted under
-/// DM-20, and return its report as a plain dictionary carrying
-/// the stage name and its reasons and the record the
+/// DM-20 and DM-24, and return its report as a plain dictionary
+/// carrying the stage name and its reasons and the record the
 /// evaluation appended, the same report the stage call
 /// returns.
-///
-/// The judge argument names a helper program the subprocess
-/// transport calls, judge_args carries the arguments handed to
-/// the helper before the payload flag as a list or tuple of
-/// strings, and judge_timeout bounds the call in seconds as an
-/// integer or a float and resolves from the published default
-/// when it is not given. The fixture argument scripts the one
-/// consultation as a dictionary in the verdict form or the
-/// fallback form, for a caller that drives a recorded or
-/// constructed answer with no helper standing behind it, and
-/// exactly one of the judge and fixture forms may stand named
-/// on one call. The host_context argument is host supplied
-/// context rendered into the picture the model judges, handed
-/// to the library untouched.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (state, run, now, judge = None, judge_args = None, judge_timeout = None, fixture = None, host_context = None))]
+#[pyo3(signature = (state, run, now, judge = None, judge_args = None, judge_timeout = None, fixture = None, host_context = None, judge_model = None, transport = None))]
 fn stage_with_model(
     py: Python<'_>,
     state: PathBuf,
@@ -742,7 +905,16 @@ fn stage_with_model(
     judge_timeout: Option<&Bound<'_, PyAny>>,
     fixture: Option<&Bound<'_, PyAny>>,
     host_context: Option<&str>,
+    judge_model: Option<&Bound<'_, PyAny>>,
+    transport: Option<Py<PyAny>>,
 ) -> PyResult<Py<PyDict>> {
+    let form_count =
+        (judge.is_some() as u8) + (fixture.is_some() as u8) + (transport.is_some() as u8);
+    if form_count > 1 {
+        return Err(to_py_error(Error::InvalidRequest(
+            "exactly one judge form may stand named on one call".to_string(),
+        )));
+    }
     arvin_core::validate_judge_form(
         judge.is_some(),
         fixture.is_some(),
@@ -750,15 +922,32 @@ fn stage_with_model(
         judge_timeout.is_some(),
     )
     .map_err(to_py_error)?;
-    // The fixture translation runs only where a fixture
-    // stands named, and the transport's pinned name comes
-    // from that one translation, the name the consultation
-    // itself carries where it carries one and the name the
-    // dictionary carries where the consultation carries
-    // none. Where neither judge form stands named, no
-    // transport stands named at all, so the library's own
-    // refusal for a context with no transport fires and its
-    // no consultation path runs for the plain call.
+    if let Some(ref callable) = transport {
+        if !callable.bind(py).is_callable() {
+            return Err(PyTypeError::new_err("transport must be callable"));
+        }
+    }
+    if judge_model.is_some() && judge.is_none() && transport.is_none() {
+        return Err(to_py_error(Error::InvalidRequest(
+            "a judge model stands named with no judge or transport to carry it".to_string(),
+        )));
+    }
+    let parsed_judge_model = match judge_model {
+        None => None,
+        Some(raw_jm) => {
+            let py_str = raw_jm
+                .cast::<PyString>()
+                .map_err(|_| PyTypeError::new_err("judge_model must be a string"))?;
+            let text = py_str.extract::<String>().map_err(|_| {
+                to_py_error(Error::InvalidRequest(
+                    "the judge model identifier must be 1 to 128 printable ASCII non-whitespace characters"
+                        .to_string(),
+                ))
+            })?;
+            validate_model_id(&text).map_err(to_py_error)?;
+            Some(text)
+        }
+    };
     let translated = match fixture {
         Some(value) => Some(fixture_consultation(value)?),
         None => None,
@@ -776,23 +965,28 @@ fn stage_with_model(
         None => Vec::new(),
     };
     let now = instant_argument(now)?;
+    check_not_reentrant(&state)?;
+    let state_for_guard = state.clone();
     let switch = Switch::new(state);
     let run_value = Value::Str(run.to_string());
-    // The transport stands built inside the detached call,
-    // because a reference to a transport trait object is not
-    // itself fit to cross into the detached closure, while the
-    // two transports the surface builds are plain values that
-    // cross whole and lend their reference inside it.
+    let chosen_model = parsed_judge_model.unwrap_or_else(|| MODEL_NAME.to_string());
     let report = py
-        .detach(|| {
+        .detach(|| -> arvin_core::Result<StageReport> {
+            let _reentrancy_guard = if transport.is_some() {
+                Some(ConsultationStateGuard::enter(&state_for_guard))
+            } else {
+                None
+            };
             let subprocess_transport;
             let fixture_transport;
-            let transport: Option<&dyn arvin_core::ModelTransport> = if let Some(program) = judge {
-                subprocess_transport = SubprocessTransport::new(
+            let callable_transport;
+            let active_transport: Option<&dyn ModelTransport> = if let Some(program) = judge {
+                subprocess_transport = SubprocessTransport::with_model(
                     PathBuf::from(program),
                     arguments,
                     timeout.unwrap_or(Duration::from_secs(DEFAULT_JUDGE_TIMEOUT_SECONDS)),
-                );
+                    chosen_model,
+                )?;
                 Some(&subprocess_transport)
             } else if let Some(consultation) = consultation {
                 fixture_transport = FixtureTransport::new(
@@ -802,10 +996,17 @@ fn stage_with_model(
                     vec![consultation],
                 );
                 Some(&fixture_transport)
+            } else if let Some(callable) = transport {
+                callable_transport = PyModelTransport {
+                    callable,
+                    model_name: chosen_model,
+                    state_path: state_for_guard.clone(),
+                };
+                Some(&callable_transport)
             } else {
                 None
             };
-            switch.stage_with_model(&run_value, &now, transport, host_context)
+            switch.stage_with_model(&run_value, &now, active_transport, host_context)
         })
         .map_err(to_py_error)?;
     stage_dict(py, &report)
@@ -818,6 +1019,7 @@ fn stage_with_model(
 /// the library.
 #[pyfunction]
 fn log(py: Python<'_>, state: PathBuf, run: &str) -> PyResult<Vec<Py<PyDict>>> {
+    check_not_reentrant(&state)?;
     let switch = Switch::new(state);
     let run_value = Value::Str(run.to_string());
     let records = py.detach(|| switch.log(&run_value)).map_err(to_py_error)?;
@@ -827,8 +1029,127 @@ fn log(py: Python<'_>, state: PathBuf, run: &str) -> PyResult<Vec<Py<PyDict>>> {
         .collect()
 }
 
+fn extract_utf8_arg(value: &Bound<'_, PyString>, label: &str) -> PyResult<String> {
+    value.extract::<String>().map_err(|_| {
+        to_py_error(Error::InvalidRequest(format!(
+            "the {label} argument is not valid UTF-8 text"
+        )))
+    })
+}
+
+const MAX_PAYLOAD_DEPTH: usize = 256;
+
+fn validate_dict_strings(root: &Bound<'_, PyDict>) -> PyResult<()> {
+    let mut stack: Vec<(Bound<'_, PyAny>, usize)> = vec![(root.clone().into_any(), 0)];
+    while let Some((node, depth)) = stack.pop() {
+        if depth > MAX_PAYLOAD_DEPTH {
+            return Err(to_py_error(Error::InvalidRequest(
+                "the judge payload nests deeper than 256 levels".to_string(),
+            )));
+        }
+        if let Ok(dict) = node.cast::<PyDict>() {
+            for (k, v) in dict.iter() {
+                let key_str = k.cast::<PyString>().map_err(|_| {
+                    to_py_error(Error::InvalidRequest(
+                        "a payload dictionary key is not a string".to_string(),
+                    ))
+                })?;
+                extract_utf8_arg(key_str, "payload key")?;
+                stack.push((v, depth + 1));
+            }
+        } else if let Ok(list) = node.cast::<PyList>() {
+            for item in list.iter() {
+                stack.push((item, depth + 1));
+            }
+        } else if let Ok(tuple) = node.cast::<pyo3::types::PyTuple>() {
+            for item in tuple.iter() {
+                stack.push((item, depth + 1));
+            }
+        } else if let Ok(s) = node.cast::<PyString>() {
+            extract_utf8_arg(s, "payload string")?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_provider_arg(
+    provider: Option<&Bound<'_, PyString>>,
+) -> PyResult<Option<DecisionProvider>> {
+    match provider {
+        None => Ok(None),
+        Some(raw_name) => {
+            let name = extract_utf8_arg(raw_name, "provider")?;
+            DecisionProvider::from_name(&name).map(Some).ok_or_else(|| {
+                to_py_error(Error::InvalidRequest(format!(
+                    "unknown decision provider {name}, expected typesafe, google, openai, perplexity, or cloudflare"
+                )))
+            })
+        }
+    }
+}
+
+/// Detect the canonical System One provider dialect name for a model identifier.
+#[pyfunction]
+fn detect_provider(model: &Bound<'_, PyString>) -> PyResult<&'static str> {
+    let text = extract_utf8_arg(model, "model")?;
+    Ok(arvin_core::detect_provider(&text).as_str())
+}
+
+/// Format a canonical DM-21 payload string or dict into provider wire JSON.
+#[pyfunction]
+#[pyo3(signature = (payload, provider = None))]
+fn format_provider_request(
+    py: Python<'_>,
+    payload: &Bound<'_, PyAny>,
+    provider: Option<&Bound<'_, PyString>>,
+) -> PyResult<String> {
+    let resolved_provider = parse_provider_arg(provider)?;
+    let raw = if let Ok(text) = payload.cast::<PyString>() {
+        extract_utf8_arg(text, "payload")?
+    } else if let Ok(dict) = payload.cast::<PyDict>() {
+        validate_dict_strings(dict)?;
+        let json_mod = py.import("json")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("allow_nan", false)?;
+        json_mod
+            .call_method("dumps", (dict,), Some(&kwargs))
+            .map_err(|_| {
+                to_py_error(Error::InvalidRequest(
+                    "the judge payload carries a non-JSON or non-finite value".to_string(),
+                ))
+            })?
+            .extract::<String>()?
+    } else {
+        return Err(PyTypeError::new_err(
+            "payload must be a JSON string or dict",
+        ));
+    };
+    arvin_core::format_provider_request(&raw, resolved_provider).map_err(to_py_error)
+}
+
+/// Normalize a raw System One provider response string into canonical DM-21 reply JSON.
+#[pyfunction]
+#[pyo3(signature = (raw_reply, provider = None, model = None))]
+fn normalize_provider_reply(
+    raw_reply: &Bound<'_, PyString>,
+    provider: Option<&Bound<'_, PyString>>,
+    model: Option<&Bound<'_, PyString>>,
+) -> PyResult<String> {
+    let reply_text = extract_utf8_arg(raw_reply, "raw_reply")?;
+    let resolved_provider = parse_provider_arg(provider)?;
+    let model_text = match model {
+        Some(m) => Some(extract_utf8_arg(m, "model")?),
+        None => None,
+    };
+    arvin_core::normalize_provider_reply(&reply_text, resolved_provider, model_text.as_deref())
+        .map_err(to_py_error)
+}
+
 #[pymodule]
 fn _arvin(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("MODEL_NAME", MODEL_NAME)?;
+    m.add("LEGACY_MODEL_NAME", LEGACY_MODEL_NAME)?;
+    m.add("JUDGE_MODELS", PyTuple::new(m.py(), JUDGE_MODELS)?)?;
     m.add("ArvinError", m.py().get_type::<ArvinError>())?;
     m.add("InvalidNameError", m.py().get_type::<InvalidNameError>())?;
     m.add(
@@ -846,5 +1167,8 @@ fn _arvin(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stage, m)?)?;
     m.add_function(wrap_pyfunction!(stage_with_model, m)?)?;
     m.add_function(wrap_pyfunction!(log, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_provider, m)?)?;
+    m.add_function(wrap_pyfunction!(format_provider_request, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize_provider_reply, m)?)?;
     Ok(())
 }
