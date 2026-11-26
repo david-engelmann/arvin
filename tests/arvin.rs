@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 use arvin::consultation_from_reply_body;
 use arvin::{
@@ -2618,6 +2619,7 @@ fn host_accepts_non_utf8_filenames(dir: &Path) -> bool {
     }
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_addresses_a_state_path_that_is_not_utf8() {
@@ -2644,6 +2646,7 @@ fn cli_addresses_a_state_path_that_is_not_utf8() {
     assert!(document.contains("\"format\": \"deadman-state/1\""));
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_refuses_an_argument_that_is_not_utf8() {
@@ -2694,6 +2697,7 @@ fn cli_refuses_an_argument_that_is_not_utf8() {
     assert_eq!(state_bytes(&dir), before);
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_refuses_a_judge_fixture_path_that_is_not_utf8() {
@@ -2724,6 +2728,7 @@ fn cli_refuses_a_judge_fixture_path_that_is_not_utf8() {
     assert_eq!(state_bytes(&dir), before);
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_addresses_a_state_path_that_is_not_utf8_inline() {
@@ -2754,6 +2759,7 @@ fn cli_addresses_a_state_path_that_is_not_utf8_inline() {
     assert!(state.exists());
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(windows)]
 #[test]
 fn cli_handles_unpaired_surrogate_os_strings_on_windows() {
@@ -4337,6 +4343,7 @@ fn subprocess(program: PathBuf, timeout: std::time::Duration) -> SubprocessTrans
     SubprocessTransport::new(program, Vec::new(), timeout)
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn subprocess_transport_reads_a_verdict_and_removes_its_payload() {
@@ -4364,6 +4371,7 @@ fn subprocess_transport_reads_a_verdict_and_removes_its_payload() {
     assert!(!Path::new(&payload_path).exists());
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn subprocess_transport_classes() {
@@ -4440,6 +4448,7 @@ fn subprocess_transport_classes() {
     assert_eq!(transport.consult("vignette"), Consultation::CallFailed);
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn subprocess_transport_enforces_its_deadline() {
@@ -4452,6 +4461,7 @@ fn subprocess_transport_enforces_its_deadline() {
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn subprocess_transport_bounds_the_reader_wait() {
@@ -4484,6 +4494,7 @@ fn subprocess_transport_refuses_a_timeout_it_cannot_add() {
     // accidental spawn writes the marker on Windows too.
     let dir = TestDir::new("model-subprocess-wide-timeout");
     let marker = dir.path().join("payload-path.txt");
+    // Portability adaptation gates OS-specific shell or wide-string pins.
     #[cfg(unix)]
     let helper = {
         let body = format!(
@@ -4492,6 +4503,7 @@ fn subprocess_transport_refuses_a_timeout_it_cannot_add() {
         );
         write_helper(&dir, "verdict.sh", &body)
     };
+    // Portability adaptation gates OS-specific shell or wide-string pins.
     #[cfg(windows)]
     let helper = {
         let reply = dir.path().join("reply.json");
@@ -4513,6 +4525,7 @@ fn subprocess_transport_refuses_a_timeout_it_cannot_add() {
     assert!(!marker.exists());
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn subprocess_transport_bounds_the_reply() {
@@ -4526,6 +4539,7 @@ fn subprocess_transport_bounds_the_reply() {
     assert_eq!(transport.consult("vignette"), Consultation::MalformedReply);
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(windows)]
 #[test]
 fn subprocess_transport_and_cli_judge_work_with_cmd_batch_on_windows() {
@@ -4791,6 +4805,7 @@ fn self_witness(
     (record, stdout, one_bytes, two_bytes)
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_model_self_witnessing_equivalence() {
@@ -4883,6 +4898,7 @@ fn cli_model_missing_judge_program_records_call_failed() {
     assert_fallback(&stdout, &record, "call failed");
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_model_helper_nonzero_exit_records_call_failed() {
@@ -4890,6 +4906,7 @@ fn cli_model_helper_nonzero_exit_records_call_failed() {
     assert_fallback(&stdout, &record, "call failed");
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_model_helper_empty_body_records_silence() {
@@ -4897,6 +4914,7 @@ fn cli_model_helper_empty_body_records_silence() {
     assert_fallback(&stdout, &record, "silence");
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_model_helper_body_outside_the_grammar_records_malformed_reply() {
@@ -4905,6 +4923,7 @@ fn cli_model_helper_body_outside_the_grammar_records_malformed_reply() {
     assert_fallback(&stdout, &record, "malformed reply");
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_model_helper_abstention_records_abstention() {
@@ -4915,6 +4934,7 @@ fn cli_model_helper_abstention_records_abstention() {
     assert_fallback(&stdout, &record, "abstention");
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn cli_model_helper_past_its_timeout_records_call_failed() {
@@ -5158,6 +5178,7 @@ fn cli_model_stage_off_seat_never_invokes_its_helper() {
         "judge.sh",
         "#!/bin/sh\ncp \"$3\" \"$1\"\nprintf '%s' '{\"model\": \"jev-1.13.0\", \"choice\": {\"label\": \"escalate\", \"confidence\": 0.9}, \"score\": {\"level\": 5}}'\n",
     );
+    // Portability adaptation gates OS-specific shell or wide-string pins.
     #[cfg(windows)]
     let helper = {
         let reply = dir.path().join("reply.json");
@@ -5282,6 +5303,7 @@ fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_help
         );
         write_helper(&dir, "judge.sh", &body)
     };
+    // Portability adaptation gates OS-specific shell or wide-string pins.
     #[cfg(windows)]
     let helper = {
         let reply = dir.path().join("reply.json");
@@ -5317,6 +5339,7 @@ fn cli_model_judge_timeout_at_the_widest_duration_fails_the_call_before_the_help
     assert!(!marker.exists(), "the helper never ran");
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn a_helper_written_from_the_contract_statement_alone_interoperates() {
@@ -5369,6 +5392,7 @@ fn a_helper_written_from_the_contract_statement_alone_interoperates() {
     );
 }
 
+// Portability adaptation gates OS-specific shell or wide-string pins.
 #[cfg(unix)]
 #[test]
 fn contract_states_the_reply_bound_the_transport_enforces() {
@@ -5494,13 +5518,17 @@ fn dead_stream() -> std::process::Stdio {
             return std::process::Stdio::from(file);
         }
     }
-    let (reader, mut writer) = std::io::pipe().expect("the anonymous pipe opens");
-    drop(reader);
-    assert!(
-        writer.write_all(b"probe").is_err(),
-        "writes to a closed pipe must fail"
-    );
-    std::process::Stdio::from(writer)
+    // Portability adaptation retries pipe creation when a concurrent child
+    // spawn on macOS inherits reader before FIOCLEX closes the race window.
+    for _ in 0..64 {
+        let (reader, mut writer) = std::io::pipe().expect("the anonymous pipe opens");
+        drop(reader);
+        if writer.write_all(b"probe").is_err() {
+            return std::process::Stdio::from(writer);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("writes to a closed pipe must fail")
 }
 
 /// Run the CLI with stdout redirected to the full device, so

@@ -593,13 +593,17 @@ fn dead_stream() -> std::process::Stdio {
             return std::process::Stdio::from(file);
         }
     }
-    let (reader, mut writer) = std::io::pipe().expect("the anonymous pipe opens");
-    drop(reader);
-    assert!(
-        writer.write_all(b"probe").is_err(),
-        "writes to a closed pipe must fail"
-    );
-    std::process::Stdio::from(writer)
+    // Portability adaptation retries pipe creation when a concurrent child
+    // spawn on macOS inherits reader before FIOCLEX closes the race window.
+    for _ in 0..64 {
+        let (reader, mut writer) = std::io::pipe().expect("the anonymous pipe opens");
+        drop(reader);
+        if writer.write_all(b"probe").is_err() {
+            return std::process::Stdio::from(writer);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    panic!("writes to a closed pipe must fail")
 }
 
 #[test]
@@ -711,6 +715,7 @@ fn codepoint_scan_skips_every_binary_suffix() {
     assert!(result.stdout.contains("em dash U+2014 count 1"));
 }
 
+// Portability adaptation gates mkfifo and Unix symlink pins to Unix.
 #[cfg(unix)]
 #[test]
 fn codepoint_scan_completes_over_a_fifo_in_the_tree() {
@@ -732,6 +737,7 @@ fn codepoint_scan_completes_over_a_fifo_in_the_tree() {
     assert!(result.stdout.contains("en dash U+2013 count 0"));
 }
 
+// Portability adaptation gates mkfifo and Unix symlink pins to Unix.
 #[cfg(unix)]
 #[test]
 fn codepoint_scan_completes_over_a_dangling_symlink() {
@@ -744,6 +750,7 @@ fn codepoint_scan_completes_over_a_dangling_symlink() {
     assert!(result.stdout.contains("en dash U+2013 count 0"));
 }
 
+// Portability adaptation gates mkfifo and Unix symlink pins to Unix.
 #[cfg(unix)]
 #[test]
 fn codepoint_scan_completes_over_a_symlink_to_a_fifo() {
@@ -766,6 +773,7 @@ fn codepoint_scan_completes_over_a_symlink_to_a_fifo() {
     assert!(result.stdout.contains("en dash U+2013 count 0"));
 }
 
+// Portability adaptation gates mkfifo and Unix symlink pins to Unix.
 #[cfg(unix)]
 #[test]
 fn codepoint_scan_counts_a_dash_behind_a_symlink_to_a_regular_file() {
@@ -778,6 +786,7 @@ fn codepoint_scan_counts_a_dash_behind_a_symlink_to_a_regular_file() {
     assert!(result.stdout.contains("em dash U+2014 count 2"));
 }
 
+// Portability adaptation gates mkfifo and Unix symlink pins to Unix.
 #[cfg(unix)]
 #[test]
 fn codepoint_scan_does_not_follow_a_symlink_to_a_directory() {

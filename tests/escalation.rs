@@ -414,6 +414,7 @@ fn replay(case_id: &str) {
     let reply_path = fixtures_dir()
         .join("replies")
         .join(format!("{case_id}.json"));
+    // Portability adaptation selects the host script helper for wire replay.
     #[cfg(unix)]
     let helper = write_helper(
         &dir,
@@ -424,6 +425,7 @@ fn replay(case_id: &str) {
             reply_path.display()
         ),
     );
+    // Portability adaptation selects the host script helper for wire replay.
     #[cfg(windows)]
     let helper = write_helper(
         &dir,

@@ -104,6 +104,7 @@ def write_helper(directory, reply_text):
 def test_recorded_cases_replay_through_the_binding(tmp_path):
     cases, entries = load_corpus()
     assert len(cases) == 48
+    # Portability adaptation checks POSIX sh only on non-Windows hosts.
     if os.name != "nt":
         shell = shutil.which("sh")
         assert shell is not None
