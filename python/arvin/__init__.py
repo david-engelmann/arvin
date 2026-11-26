@@ -35,14 +35,20 @@ streak step down and at null on every other record.
 """
 
 from ._arvin import (
-    CorruptError,
+    JUDGE_MODELS,
+    LEGACY_MODEL_NAME,
+    MODEL_NAME,
     ArvinError,
+    CorruptError,
     FailureError,
     InvalidNameError,
     InvalidRequestError,
     NotFoundError,
     RefusalError,
+    detect_provider,
+    format_provider_request,
     log,
+    normalize_provider_reply,
     prove,
     pull,
     register,
@@ -52,14 +58,20 @@ from ._arvin import (
 )
 
 __all__ = [
-    "CorruptError",
     "ArvinError",
+    "CorruptError",
     "FailureError",
     "InvalidNameError",
     "InvalidRequestError",
+    "JUDGE_MODELS",
+    "LEGACY_MODEL_NAME",
+    "MODEL_NAME",
     "NotFoundError",
     "RefusalError",
+    "detect_provider",
+    "format_provider_request",
     "log",
+    "normalize_provider_reply",
     "prove",
     "pull",
     "register",

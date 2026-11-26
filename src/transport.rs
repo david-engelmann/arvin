@@ -26,13 +26,10 @@ const SCORE_LEVELS: [&str; 10] = [
     "a runaway in progress",
 ];
 
-/// The call payload the subprocess transport writes, a JSON
-/// document holding the pinned model name and the vignette as
-/// the state text and the two questions of the doctrine, a
-/// choice question over the three verdict labels with the
-/// criterion of each label and a score question over the ten
-/// declared levels.
-fn judge_payload(model_name: &str, vignette: &str) -> String {
+/// Build the structured DM-21 call payload document holding the
+/// pinned model name, the vignette state text, and the choice
+/// and score questions in construction order.
+pub fn judge_payload_value(model_name: &str, vignette: &str) -> Value {
     let labels: Vec<Value> = [
         (
             "hold",
@@ -65,7 +62,7 @@ fn judge_payload(model_name: &str, vignette: &str) -> String {
         .iter()
         .map(|level| Value::Str(level.to_string()))
         .collect();
-    let value = Value::Object(vec![
+    Value::Object(vec![
         ("model".to_string(), Value::Str(model_name.to_string())),
         ("state".to_string(), Value::Str(vignette.to_string())),
         (
@@ -81,7 +78,12 @@ fn judge_payload(model_name: &str, vignette: &str) -> String {
                 ]),
             ]),
         ),
-    ]);
+    ])
+}
+
+/// Render the canonical indented DM-21 call payload JSON text.
+fn judge_payload(model_name: &str, vignette: &str) -> String {
+    let value = judge_payload_value(model_name, vignette);
     let mut out = String::new();
     dump_value(&value, 0, &mut out);
     out
@@ -271,6 +273,25 @@ impl SubprocessTransport {
             timeout,
             model_name: MODEL_NAME.to_string(),
         }
+    }
+
+    /// Construct a subprocess transport pinned to a caller-selected model
+    /// identifier under DM-24, refusing out-of-shape identifiers before
+    /// any consultation runs.
+    pub fn with_model(
+        program: PathBuf,
+        args: Vec<String>,
+        timeout: std::time::Duration,
+        model_name: impl Into<String>,
+    ) -> Result<SubprocessTransport> {
+        let model_name = model_name.into();
+        crate::validate_model_id(&model_name)?;
+        Ok(SubprocessTransport {
+            program,
+            args,
+            timeout,
+            model_name,
+        })
     }
 
     fn run_helper(&self, payload_path: &PathBuf) -> Consultation {
