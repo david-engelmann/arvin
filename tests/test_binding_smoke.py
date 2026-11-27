@@ -1557,3 +1557,58 @@ def test_dm25_runs_binding_summaries_and_reentry_guard(tmp_path):
     assert len(re_seen) == 1
     assert "cannot re-enter" in re_seen[0]
     assert rep["appended"]["fallback_taken"] == "call failed"
+
+
+def test_dm26_version_and_pep561_type_stubs(tmp_path):
+    import ast
+    import sys
+    import zipfile
+
+    assert arvin.__version__ == "0.2.0"
+    assert "__version__" in arvin.__all__
+    pkg_dir = Path(arvin.__file__).resolve().parent
+    assert (pkg_dir / "py.typed").is_file()
+    stub_path = pkg_dir / "__init__.pyi"
+    assert stub_path.is_file()
+
+    repo_root = Path(__file__).resolve().parents[1]
+    wheel_dir = tmp_path / "wheels"
+    wheel_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "maturin",
+            "build",
+            "--offline",
+            "--locked",
+            "--out",
+            str(wheel_dir),
+            "--manifest-path",
+            str(repo_root / "bindings" / "Cargo.toml"),
+        ],
+        cwd=str(repo_root),
+        check=True,
+    )
+    wheels = list(wheel_dir.glob("arvin-0.2.0-*.whl"))
+    assert len(wheels) == 1, wheels
+    with zipfile.ZipFile(wheels[0]) as zf:
+        names = set(zf.namelist())
+        for req in ("arvin/__init__.py", "arvin/py.typed", "arvin/__init__.pyi"):
+            assert req in names, names
+        assert any(n.endswith("/LICENSE") or n == "LICENSE" for n in names), names
+        stub_text = zf.read("arvin/__init__.pyi").decode("utf-8")
+
+    assert "judge_args: list[str] | tuple[str, ...] | None = None" in stub_text
+    assert "fixture: dict[str, Any] | None = None" in stub_text
+    tree = ast.parse(stub_text)
+    declared = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            declared.add(node.name)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            declared.add(node.target.id)
+    assert declared - {"__all__"} == set(arvin.__all__)
+    for name in arvin.__all__:
+        assert hasattr(arvin, name), name
+
