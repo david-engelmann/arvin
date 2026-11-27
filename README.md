@@ -19,7 +19,14 @@ reason missed proofs
 
 ## Install
 
-Install from a clean checkout with Cargo. The checkout ships two binaries, and the install names the arvin binary on its own because a shared scanner binary of the same name from a sibling repo blocks a plain install of every binary at once.
+Install the CLI from Crates.io or from a clean checkout with Cargo, or install the Python package with pip. Because the crate also ships a `codepoint_scan` helper binary, pass `--bin arvin` when installing with Cargo.
+
+```
+cargo install arvin --bin arvin
+pip install arvin
+```
+
+From a local checkout, install the binary with Cargo.
 
 ```
 git clone https://github.com/david-engelmann/arvin.git
@@ -216,6 +223,20 @@ stage throttle reasons ['missed proofs']
 verdict escalate confidence 0.77
 ```
 
+### System One providers and run inspection
+
+Arvin defaults to `jev-1.14.0` and carries pure deterministic wire codecs in its `providers` module and the Python binding across five System One decision model families, TypeSafe (`jev-1.14.0`, `jev-1.13.0`), Google (`gemini-decision-1`), OpenAI (`gpt-6-luna`, `gpt-oss-safeguard-120b`, `gpt-oss-safeguard-20b`), Perplexity (`pplx-decider-v1.3`, `pplx-decider-latest`, `pplx-decider-flash-v1.3`, `pplx-decider-flash-latest`), and Cloudflare (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `clef`, `clef-flash`). The standalone standard-library helper `examples/decision_judge.py` reads the provider API key from the environment (such as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or `DECISION_API_KEY` for Google) and connects `--judge` to any of those HTTPS endpoints while keeping the core library free of network and credential dependencies, and `arvin --state STATE runs` or `arvin.runs(state)` inspects every recorded run in registration order without evaluating or mutating the state file.
+
+```
+$ arvin --state usage.json runs
+usage-run stage=kill killed=true spend_total=150 soft_ceiling=100 hard_ceiling=200 proof_interval_seconds=60 missed_proof_limit=5 registered_at=2026-11-07T23:21:10.287132+00:00 last_proof_at=2026-11-07T23:21:10.381314+00:00
+$ GEMINI_API_KEY='SYNTHETIC-TEST-VALUE-key' arvin --state model.json stage model-run --judge ./examples/decision_judge.py --judge-model gemini-decision-1
+```
+
+### Optional composition
+
+Arvin is completely standalone and depends on zero sibling packages. In hosts that combine multiple tools, a supervisor can poll `arvin --state state.json stage RUN_ID` before admitting tool calls through `portcullis`, trigger `deadbolt --state vault.json cutoff --run RUN_ID` when the stage reaches `cut budget` or `kill`, and tear down an active `mayfly` sandbox when `kill` latches.
+
 ## Status
 
 The staged cutoff works end to end through the command line, the library, and the Python binding against one state file in the deadman-state/1 format. Registration, proofs, spend reports, stage evaluation, the operator pull, the decision log, and the run summary listing all stand landed and tested. The evaluator walks a run down the ladder none, warn, throttle, cut tools, cut budget, kill on missed proofs and on spend ceilings, and a pull goes straight to kill and latches it. Arvin signals no process itself, and hosts enforce the stage against their own processes.
@@ -226,7 +247,7 @@ What is not built. Arvin has no daemon and no watcher, so a stage moves only whe
 
 Closed perfection rounds are 100 of 100. A round counts only when a full cycle of work and audit and review and red team and approval has closed, and seeding and setup are not rounds.
 
-The contract lives in CONTRACT.md, where obligations DM-1 to DM-25 state the stage semantics, the limits, the behaviour of the model seat and its records and provider codecs, and the run summary listing and version flag, and ROADMAP.md records the decision model doctrine the seat implements.
+The contract lives in CONTRACT.md, where obligations DM-1 to DM-26 state the stage semantics, the limits, the behaviour of the model seat and its records and provider codecs, the run summary listing and version flag, and the v0.2.0 release packaging rules, and ROADMAP.md records the decision model doctrine the seat implements.
 
 The remote seed was verified on 2026-11-02 against the staged seed and its commit is aa48f0fe5d57b8bc0e01db2c687ed128e1e0f2d4, a parentless commit holding exactly README.md and LICENSE and .gitignore.
 

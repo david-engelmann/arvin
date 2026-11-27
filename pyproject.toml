@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "arvin"
+version = "0.2.0"
+description = "A staged cutoff for agent runs, where a run keeps its tools, budget, and sandbox only while it keeps proving progress. Three triggers move the stage, an operator pull, a budget ceiling, and missed proofs."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/david-engelmann/arvin"
+Repository = "https://github.com/david-engelmann/arvin"
+Changelog = "https://github.com/david-engelmann/arvin/blob/main/CHANGELOG.md"
+Issues = "https://github.com/david-engelmann/arvin/issues"
+
+[tool.maturin]
+manifest-path = "bindings/Cargo.toml"
+module-name = "arvin._arvin"
+python-source = "python"
+features = ["extension-module"]
+exclude = ["tests/fixtures/**", ".github/**"]

@@ -70,6 +70,7 @@ __all__ = [
     "MODEL_NAME",
     "NotFoundError",
     "RefusalError",
+    "__version__",
     "detect_provider",
     "format_provider_request",
     "log",
@@ -83,4 +84,4 @@ __all__ = [
     "stage_with_model",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
