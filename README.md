@@ -19,11 +19,14 @@ reason missed proofs
 
 ## Install
 
-Install the CLI from Crates.io or from a clean checkout with Cargo, or install the Python package with pip. Because the crate also ships a `codepoint_scan` helper binary, pass `--bin arvin` when installing with Cargo.
+Install the `arvin` CLI from Crates.io or from the `v0.2.0` git tag with Cargo, unpack a prebuilt Linux, macOS, or Windows binary archive or install a prebuilt `cp39-abi3` wheel from [the v0.2.0 GitHub Release](https://github.com/david-engelmann/arvin/releases/tag/v0.2.0) (selecting the archive or wheel matching your platform, shown below for Linux `x86_64`), or install the Python binding from the `v0.2.0` git tag with `pip`. Because the crate also ships a `codepoint_scan` helper binary, pass `--bin arvin` when installing with Cargo.
 
 ```
 cargo install arvin --bin arvin
-pip install arvin
+cargo install --git https://github.com/david-engelmann/arvin.git --tag v0.2.0 --bin arvin
+curl -fsSL https://github.com/david-engelmann/arvin/releases/download/v0.2.0/arvin-v0.2.0-x86_64-unknown-linux-gnu.tar.gz | tar -xzf -
+pip install https://github.com/david-engelmann/arvin/releases/download/v0.2.0/arvin-0.2.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install "git+https://github.com/david-engelmann/arvin.git@v0.2.0"
 ```
 
 From a local checkout, install the binary with Cargo.
@@ -236,6 +239,16 @@ $ GEMINI_API_KEY='SYNTHETIC-TEST-VALUE-key' arvin --state model.json stage model
 ### Optional composition
 
 Arvin is completely standalone and depends on zero sibling packages. In hosts that combine multiple tools, a supervisor can poll `arvin --state state.json stage RUN_ID` before admitting tool calls through `portcullis`, trigger `deadbolt --state vault.json cutoff --run RUN_ID` when the stage reaches `cut budget` or `kill`, and tear down an active `mayfly` sandbox when `kill` latches.
+
+## Guides and examples
+
+Read [docs/GUIDE.md](docs/GUIDE.md) for the full operator and integration guide covering proof interval and spend ceiling tuning, hysteresis, latched kill, read-only `runs` inspection, and System One provider setup. From a local checkout, run the self-contained Rust and Python quickstarters in [examples/quickstart.rs](examples/quickstart.rs) and [examples/supervisor_loop.py](examples/supervisor_loop.py), or inspect the HTTPS judge adapter in [examples/decision_judge.py](examples/decision_judge.py).
+
+```
+cargo build --bin arvin
+cargo run --example quickstart
+python3 examples/supervisor_loop.py
+```
 
 ## Status
 
