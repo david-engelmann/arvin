@@ -1,10 +1,14 @@
 # arvin
 
+![arvin overview](docs/assets/hero.svg)
+
 A staged cutoff for agent runs, where a run keeps its tools, budget, and sandbox only while it keeps proving progress. Three triggers move the stage, an operator pull, a budget ceiling, and missed proofs.
 
 Arvin is a staged cutoff carried by a Rust library with a command line and a thin Python binding. A host registers a run against one state file, posts progress proofs and spend reports while the run works, and polls the stage of the run. Arvin walks the stage down its ladder as the triggers trip, and every evaluation and decision stands in the decision log of the run in the same file. Arvin signals no process itself. The host reads the stage and enforces it against its own processes.
 
-[![CI](https://github.com/david-engelmann/arvin/actions/workflows/ci.yml/badge.svg)](https://github.com/david-engelmann/arvin/actions/workflows/ci.yml)
+[![CI](https://github.com/david-engelmann/arvin/actions/workflows/ci.yml/badge.svg)](https://github.com/david-engelmann/arvin/actions/workflows/ci.yml) [![Portability](https://github.com/david-engelmann/arvin/actions/workflows/portability.yml/badge.svg)](https://github.com/david-engelmann/arvin/actions/workflows/portability.yml) [![Crates.io](https://img.shields.io/crates/v/arvin.svg)](https://crates.io/crates/arvin) [![Docs.rs](https://docs.rs/arvin/badge.svg)](https://docs.rs/arvin) [![Release v0.2.0](https://img.shields.io/github/v/release/david-engelmann/arvin)](https://github.com/david-engelmann/arvin/releases/tag/v0.2.0) [![License MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+[Install](#install) | [Quickstart](#quickstart) | [Architecture](#architecture) | [Usage](#usage) | [Guides and examples](#guides-and-examples) | [Operator Guide](docs/GUIDE.md) | [Contributing](CONTRIBUTING.md) | [Contract](CONTRACT.md)
 
 ```
 $ arvin --state state.json register --proof-interval 3 --missed-limit 5 --soft-ceiling 100 --hard-ceiling 200 demo-run
@@ -59,6 +63,21 @@ proved demo-run
 $ arvin --state state.json stage demo-run
 stage none
 ```
+
+## Architecture
+
+![arvin architecture](docs/assets/architecture.svg)
+
+Every mutating operation holds an exclusive advisory lock on `<state>.lock`, appends a gapless log entry, and publishes `deadman-state/1` by atomic rename, while `stage` and `stage_with_model` evaluate deterministic triggers and optional System One consultations to advance or lower the stage.
+
+| Stage | Upward warrant | Recovery rule | Host enforcement action |
+| --- | --- | --- | --- |
+| `none` | `0` missed intervals and spend below ceilings | Standing baseline | Grant full tools, budget, and sandbox |
+| `warn` | `1` missed proof interval | Steps down on `2`nd clean evaluation (requiring `>= 0.85` model endorsement when judged) | Log warning and prompt progress proof |
+| `throttle` | `2` missed intervals (or held model step from `warn`) | Steps down on `2`nd clean evaluation (requiring `>= 0.85` model endorsement when judged) | Slow tool cadence or concurrency |
+| `cut tools` | `3` missed intervals (or held model step from `throttle`) | Steps down on `2`nd clean evaluation (requiring `>= 0.85` model endorsement when judged) | Restrict to read-only recovery tools |
+| `cut budget` | `spend_total >= soft_ceiling` or `4+` missed below limit (or held model step from `cut tools`) | Steps down after `2` clean evaluations once spend and proofs stand clear | Freeze new spend and revoke run grants |
+| `kill` | Operator `pull`, `spend_total >= hard_ceiling`, or `missed_proof_limit` | Latched permanently (`killed = true`) | Stop the run and tear down its sandbox |
 
 ## Usage
 
@@ -242,7 +261,7 @@ Arvin is completely standalone and depends on zero sibling packages. In hosts th
 
 ## Guides and examples
 
-Read [docs/GUIDE.md](docs/GUIDE.md) for the full operator and integration guide covering proof interval and spend ceiling tuning, hysteresis, latched kill, read-only `runs` inspection, and System One provider setup. From a local checkout, run the self-contained Rust and Python quickstarters in [examples/quickstart.rs](examples/quickstart.rs) and [examples/supervisor_loop.py](examples/supervisor_loop.py), or inspect the HTTPS judge adapter in [examples/decision_judge.py](examples/decision_judge.py).
+Read [docs/GUIDE.md](docs/GUIDE.md) for the full operator and integration guide covering proof interval and spend ceiling tuning, hysteresis, latched kill, read-only `runs` inspection, and System One provider setup, and see [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) for contributor gates and vulnerability reporting. From a local checkout, run the self-contained Rust and Python quickstarters in [examples/quickstart.rs](examples/quickstart.rs) and [examples/supervisor_loop.py](examples/supervisor_loop.py), or inspect the HTTPS judge adapter in [examples/decision_judge.py](examples/decision_judge.py).
 
 ```
 cargo build --bin arvin

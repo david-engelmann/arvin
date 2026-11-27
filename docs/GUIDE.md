@@ -2,6 +2,8 @@
 
 Arvin is the staged cutoff switch for autonomous agent runs. Rather than leaving an agent with unlimited tools and budget until a catastrophic failure occurs, a host registers each run in an `arvin` state file, posts periodic progress proofs and spend totals, and enforces the stage `arvin` evaluates.
 
+![arvin architecture](assets/architecture.svg)
+
 ## 1. The stage ladder and trigger model
 
 Every registered run stands at one of six ordered stages in the `deadman-state/1` state document.

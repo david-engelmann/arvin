@@ -10,6 +10,7 @@ repository = "https://github.com/david-engelmann/arvin"
 
 [lib]
 name = "arvin"
+doc = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
