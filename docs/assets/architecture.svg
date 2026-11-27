@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 480" width="1200" height="480" role="img">
+  <defs>
+    <linearGradient id="ar-arch-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b101b"/>
+      <stop offset="55%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#0b1120"/>
+    </linearGradient>
+    <linearGradient id="ar-arch-accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+    <linearGradient id="ar-arch-panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#151f32"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <pattern id="ar-arch-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#94a3b8" fill-opacity="0.10"/>
+    </pattern>
+  </defs>
+  <rect x="4" y="4" width="1192" height="472" rx="18" fill="url(#ar-arch-bg)" stroke="#243247" stroke-width="1.5"/>
+  <rect x="4" y="4" width="1192" height="472" rx="18" fill="url(#ar-arch-grid)"/>
+  <path d="M 22 4.75 L 1178 4.75" stroke="url(#ar-arch-accent)" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="44" y="46" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="20" font-weight="700" fill="#f8fafc">Arvin Evaluation, Hysteresis, and Atomic State Architecture</text>
+  <text x="44" y="70" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="13" fill="#94a3b8">Every mutating call holds an exclusive lock on &lt;state&gt;.lock and publishes deadman-state/1 + log by atomic rename</text>
+
+  <!-- Column 1: Host Inputs -->
+  <rect x="40" y="98" width="290" height="342" rx="14" fill="url(#ar-arch-panel)" stroke="#334155" stroke-width="1.2"/>
+  <text x="60" y="128" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" font-weight="700" fill="#f8fafc">1. Host Supervisor Calls</text>
+  <text x="60" y="148" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#94a3b8">Time is an explicit input in library/Python</text>
+
+  <rect x="60" y="168" width="250" height="42" rx="8" fill="#0f172a" stroke="#475569"/>
+  <text x="74" y="193" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" font-weight="700" fill="#38bdf8">register</text>
+  <text x="148" y="193" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">intervals + spend ceilings</text>
+
+  <rect x="60" y="220" width="250" height="42" rx="8" fill="#0f172a" stroke="#475569"/>
+  <text x="74" y="245" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" font-weight="700" fill="#22c55e">prove</text>
+  <text x="148" y="245" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">resets missed-proof clock</text>
+
+  <rect x="60" y="272" width="250" height="42" rx="8" fill="#0f172a" stroke="#475569"/>
+  <text x="74" y="297" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" font-weight="700" fill="#f59e0b">spend</text>
+  <text x="148" y="297" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">accumulates host units</text>
+
+  <rect x="60" y="324" width="250" height="42" rx="8" fill="#0f172a" stroke="#ef4444"/>
+  <text x="74" y="349" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" font-weight="700" fill="#f87171">pull</text>
+  <text x="148" y="349" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">latches kill immediately</text>
+
+  <rect x="60" y="376" width="250" height="42" rx="8" fill="#0f172a" stroke="#64748b"/>
+  <text x="74" y="401" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" font-weight="700" fill="#cbd5e1">runs / log</text>
+  <text x="158" y="401" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#94a3b8">shared lock, zero write</text>
+
+  <!-- Arrow 1 -> 2 -->
+  <path d="M 334 268 L 376 268" stroke="#f97316" stroke-width="2.2" stroke-linecap="round"/>
+  <polygon points="382,268 372,262 372,274" fill="#f97316"/>
+
+  <!-- Column 2: Deterministic Evaluator + Model Seat -->
+  <rect x="388" y="98" width="424" height="342" rx="14" fill="url(#ar-arch-panel)" stroke="#f97316" stroke-width="1.4"/>
+  <text x="410" y="128" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" font-weight="700" fill="#fdba74">2. Exclusive Lock Stage Evaluator</text>
+  <text x="410" y="148" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#94a3b8">&lt;state&gt;.lock (advisory lock + identity check)</text>
+
+  <rect x="410" y="166" width="380" height="74" rx="10" fill="#0f172a" stroke="#334155"/>
+  <text x="426" y="190" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="13" font-weight="700" fill="#f8fafc">Deterministic Trigger Warrant</text>
+  <text x="426" y="210" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#cbd5e1">hard_ceiling -&gt; kill | soft_ceiling -&gt; cut budget</text>
+  <text x="426" y="228" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#cbd5e1">missed 1..4+ -&gt; warn..cut budget | limit -&gt; kill</text>
+
+  <rect x="410" y="252" width="380" height="74" rx="10" fill="#0f172a" stroke="#334155"/>
+  <text x="426" y="276" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="13" font-weight="700" fill="#f8fafc">Hysteresis and Latched Kill Envelope</text>
+  <text x="426" y="296" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">Rises apply immediately and falls take 2 clean evals</text>
+  <text x="426" y="314" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#fca5a5">Once killed=true stands, stage stays kill forever</text>
+
+  <rect x="410" y="338" width="380" height="82" rx="10" fill="#1e162b" stroke="#a855f7"/>
+  <text x="426" y="362" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="13" font-weight="700" fill="#e9d5ff">Optional System One Seat (warn, throttle, cut tools)</text>
+  <text x="426" y="382" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#cbd5e1">Held seat escalate &gt;= 0.60 | Fall seat de-escalate &gt;= 0.85</text>
+  <text x="426" y="400" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#c4b5fd">jev-1.14.0 | gemini | openai | perplexity | cloudflare</text>
+
+  <!-- Arrow 2 -> 3 -->
+  <path d="M 816 268 L 858 268" stroke="#f97316" stroke-width="2.2" stroke-linecap="round"/>
+  <polygon points="864,268 854,262 854,274" fill="#f97316"/>
+
+  <!-- Column 3: State File + Host Enforcement -->
+  <rect x="870" y="98" width="290" height="342" rx="14" fill="url(#ar-arch-panel)" stroke="#334155" stroke-width="1.2"/>
+  <text x="890" y="128" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" font-weight="700" fill="#f8fafc">3. Atomic Publish + Enforce</text>
+  <text x="890" y="148" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#94a3b8">Arvin signals no OS process directly</text>
+
+  <rect x="890" y="168" width="250" height="108" rx="10" fill="#0f172a" stroke="#22c55e"/>
+  <text x="906" y="192" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" font-weight="700" fill="#86efac">deadman-state/1 JSON</text>
+  <text x="906" y="214" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">Single fsynced temp file</text>
+  <text x="906" y="234" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">renamed over state path</text>
+  <text x="906" y="254" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#94a3b8">runs[] + gapless log[]</text>
+
+  <rect x="890" y="292" width="250" height="126" rx="10" fill="#0f172a" stroke="#475569"/>
+  <text x="906" y="316" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="13" font-weight="700" fill="#f8fafc">Host Enforcement Hooks</text>
+  <text x="906" y="338" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#cbd5e1">cut tools  -&gt; restrict gate</text>
+  <text x="906" y="360" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#cbd5e1">cut budget -&gt; revoke grants</text>
+  <text x="906" y="382" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" fill="#fca5a5">kill       -&gt; stop sandbox</text>
+  <text x="906" y="404" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="11" fill="#94a3b8">Works standalone in any host</text>
+</svg>

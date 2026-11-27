@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" width="1200" height="360" role="img">
+  <defs>
+    <linearGradient id="ar-hero-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b101b"/>
+      <stop offset="55%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#0b1120"/>
+    </linearGradient>
+    <linearGradient id="ar-hero-accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+    <linearGradient id="ar-hero-panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#151f32"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <pattern id="ar-hero-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1" fill="#94a3b8" fill-opacity="0.10"/>
+    </pattern>
+  </defs>
+  <rect x="4" y="4" width="1192" height="352" rx="18" fill="url(#ar-hero-bg)" stroke="#243247" stroke-width="1.5"/>
+  <rect x="4" y="4" width="1192" height="352" rx="18" fill="url(#ar-hero-grid)"/>
+  <path d="M 22 4.75 L 1178 4.75" stroke="url(#ar-hero-accent)" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- Icon + Wordmark -->
+  <rect x="48" y="48" width="52" height="52" rx="13" fill="#2a1612" stroke="#f97316" stroke-width="1.5"/>
+  <path d="M 62 84 L 74 60 L 86 84 M 66 77 L 82 77" fill="none" stroke="#f97316" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="88" cy="60" r="4" fill="#ef4444"/>
+  <text x="116" y="85" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="38" font-weight="800" fill="#f8fafc" letter-spacing="-0.8">arvin</text>
+  <rect x="232" y="60" width="66" height="24" rx="12" fill="#291811" stroke="#f97316" stroke-width="1"/>
+  <text x="265" y="76" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" font-weight="700" fill="#fdba74">v0.2.0</text>
+
+  <text x="48" y="134" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="20" font-weight="600" fill="#e2e8f0">Staged cutoff switch for autonomous agent runs</text>
+  <text x="48" y="166" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#94a3b8">A run keeps its tools, budget, and sandbox only while it keeps proving progress.</text>
+  <text x="48" y="188" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="14" fill="#94a3b8">Deterministic locked state, two-eval hysteresis, latched kill, and System One seat.</text>
+
+  <rect x="48" y="224" width="198" height="28" rx="14" fill="#231612" stroke="#f97316" stroke-width="1"/>
+  <text x="147" y="242" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" fill="#fed7aa">Rust + CLI + Python abi3</text>
+  <rect x="258" y="224" width="152" height="28" rx="14" fill="#131c2e" stroke="#334155" stroke-width="1"/>
+  <text x="334" y="242" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" fill="#cbd5e1">deadman-state/1</text>
+  <rect x="422" y="224" width="184" height="28" rx="14" fill="#131c2e" stroke="#334155" stroke-width="1"/>
+  <text x="514" y="242" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" fill="#cbd5e1">jev-1.14.0 + 5 families</text>
+  <rect x="48" y="264" width="178" height="28" rx="14" fill="#131c2e" stroke="#334155" stroke-width="1"/>
+  <text x="137" y="282" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" fill="#cbd5e1">2-eval fall hysteresis</text>
+  <rect x="238" y="264" width="168" height="28" rx="14" fill="#131c2e" stroke="#334155" stroke-width="1"/>
+  <text x="322" y="282" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" fill="#cbd5e1">Zero-network core</text>
+  <rect x="418" y="264" width="188" height="28" rx="14" fill="#131c2e" stroke="#334155" stroke-width="1"/>
+  <text x="512" y="282" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="12" fill="#cbd5e1">Standalone MIT crate</text>
+
+  <!-- Right Ladder Panel -->
+  <rect x="630" y="30" width="540" height="300" rx="14" fill="url(#ar-hero-panel)" stroke="#293548" stroke-width="1.2"/>
+  <rect x="648" y="48" width="504" height="38" rx="9" fill="#0b2919" stroke="#22c55e" stroke-width="1.2"/>
+  <circle cx="670" cy="67" r="9" fill="#22c55e" fill-opacity="0.22" stroke="#22c55e" stroke-width="1.2"/>
+  <text x="670" y="71" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" font-weight="700" fill="#22c55e">0</text>
+  <text x="690" y="72" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="13" font-weight="700" fill="#f8fafc">none</text>
+  <text x="1136" y="71" text-anchor="end" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">full tools, budget, sandbox</text>
+  <rect x="648" y="94" width="504" height="38" rx="9" fill="#2a2309" stroke="#eab308" stroke-width="1.2"/>
+  <circle cx="670" cy="113" r="9" fill="#eab308" fill-opacity="0.22" stroke="#eab308" stroke-width="1.2"/>
+  <text x="670" y="117" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" font-weight="700" fill="#eab308">1</text>
+  <text x="690" y="118" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="13" font-weight="700" fill="#f8fafc">warn</text>
+  <text x="1136" y="117" text-anchor="end" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">1 missed proof interval</text>
+  <rect x="648" y="140" width="504" height="38" rx="9" fill="#2d1e08" stroke="#f59e0b" stroke-width="1.2"/>
+  <circle cx="670" cy="159" r="9" fill="#f59e0b" fill-opacity="0.22" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="670" y="163" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" font-weight="700" fill="#f59e0b">2</text>
+  <text x="690" y="164" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="13" font-weight="700" fill="#f8fafc">throttle</text>
+  <text x="1136" y="163" text-anchor="end" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">2 missed intervals or model step</text>
+  <rect x="648" y="186" width="504" height="38" rx="9" fill="#2f1709" stroke="#f97316" stroke-width="1.2"/>
+  <circle cx="670" cy="205" r="9" fill="#f97316" fill-opacity="0.22" stroke="#f97316" stroke-width="1.2"/>
+  <text x="670" y="209" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" font-weight="700" fill="#f97316">3</text>
+  <text x="690" y="210" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="13" font-weight="700" fill="#f8fafc">cut tools</text>
+  <text x="1136" y="209" text-anchor="end" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">3 missed intervals or model step</text>
+  <rect x="648" y="232" width="504" height="38" rx="9" fill="#301216" stroke="#ef4444" stroke-width="1.2"/>
+  <circle cx="670" cy="251" r="9" fill="#ef4444" fill-opacity="0.22" stroke="#ef4444" stroke-width="1.2"/>
+  <text x="670" y="255" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" font-weight="700" fill="#ef4444">4</text>
+  <text x="690" y="256" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="13" font-weight="700" fill="#f8fafc">cut budget</text>
+  <text x="1136" y="255" text-anchor="end" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">soft ceiling, 4+ missed, or model step</text>
+  <rect x="648" y="278" width="504" height="38" rx="9" fill="#3b0d11" stroke="#dc2626" stroke-width="1.2"/>
+  <circle cx="670" cy="297" r="9" fill="#dc2626" fill-opacity="0.22" stroke="#dc2626" stroke-width="1.2"/>
+  <text x="670" y="301" text-anchor="middle" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="11" font-weight="700" fill="#dc2626">5</text>
+  <text x="690" y="302" font-family='ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace' font-size="13" font-weight="700" fill="#f8fafc">kill [LATCHED]</text>
+  <text x="1136" y="301" text-anchor="end" font-family='ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif' font-size="12" fill="#cbd5e1">pull, hard ceiling, or missed limit</text>
+</svg>
