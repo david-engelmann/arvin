@@ -224,12 +224,15 @@ fn readme_install_and_guides_sections_are_verified() {
     assert_clean_prose(&readme_path, &readme);
     assert_sanitized(&readme_path, &readme);
 
+    // Recorded correction for DM-27: the published v0.2.0 GitHub Release asset
+    // built on ubuntu-24.04 is named manylinux_2_39_x86_64.whl rather than
+    // manylinux_2_17_x86_64.manylinux2014_x86_64.whl.
     for required in [
         "cargo install arvin --bin arvin",
         "cargo install --git https://github.com/david-engelmann/arvin.git --tag v0.2.0 --bin arvin",
         "https://github.com/david-engelmann/arvin/releases/tag/v0.2.0",
         "arvin-v0.2.0-x86_64-unknown-linux-gnu.tar.gz",
-        "arvin-0.2.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+        "arvin-0.2.0-cp39-abi3-manylinux_2_39_x86_64.whl",
         "pip install \"git+https://github.com/david-engelmann/arvin.git@v0.2.0\"",
         "cargo install --path . --bin arvin",
         "[docs/GUIDE.md](docs/GUIDE.md)",
@@ -238,6 +241,10 @@ fn readme_install_and_guides_sections_are_verified() {
     ] {
         assert!(readme.contains(required), "README.md missing {required:?}");
     }
+    assert!(
+        !readme.contains("manylinux_2_17"),
+        "README.md must name the actual published manylinux_2_39 wheel asset"
+    );
     assert!(
         !readme.contains("pip install arvin"),
         "README.md must not instruct bare pip install arvin while unpublished on PyPI"

@@ -29,7 +29,7 @@ Install the `arvin` CLI from Crates.io or from the `v0.2.0` git tag with Cargo, 
 cargo install arvin --bin arvin
 cargo install --git https://github.com/david-engelmann/arvin.git --tag v0.2.0 --bin arvin
 curl -fsSL https://github.com/david-engelmann/arvin/releases/download/v0.2.0/arvin-v0.2.0-x86_64-unknown-linux-gnu.tar.gz | tar -xzf -
-pip install https://github.com/david-engelmann/arvin/releases/download/v0.2.0/arvin-0.2.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+pip install https://github.com/david-engelmann/arvin/releases/download/v0.2.0/arvin-0.2.0-cp39-abi3-manylinux_2_39_x86_64.whl
 pip install "git+https://github.com/david-engelmann/arvin.git@v0.2.0"
 ```
 
